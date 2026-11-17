@@ -59,12 +59,16 @@ Esta versão substitui PeerJS/WebRTC e as credenciais TURN do Metered por um ser
 
 **API HTTP:** `POST /api/register`, `POST /api/login`, `POST /api/logout`, `GET /api/me`, `GET /api/leaderboard`.
 
-### ⚠️ Persistência das contas no Render
-O disco do Render é **temporário**: sem disco persistente, `users.json` apaga-se a cada deploy/reinício e todas as contas e elos desaparecem. Opções:
-1. Plano pago + **Disk** (descomenta o bloco `disk` no `render.yaml` e define `DATA_DIR=/var/data`).
-2. Mudar o armazenamento para uma base de dados externa (ex.: Postgres). A lógica está concentrada nas funções `loadUsers`/`saveUsersNow` do `server.js`.
+### Persistência das contas (Postgres)
+O disco do Render é **temporário**, por isso as contas ficam numa base de dados Postgres externa e gratuita (ex.: [Neon](https://neon.tech)).
 
-Não faças commit da pasta `data/` (já está no `.gitignore`).
+1. Cria um projeto no Neon e copia a *connection string* (`postgresql://...`).
+2. No Render: **Environment → Add Environment Variable** → `DATABASE_URL` = a string copiada.
+3. Faz deploy. No log deve aparecer `armazenamento: Postgres`.
+
+- A tabela `kv` é criada automaticamente no arranque; as contas e o elo ficam numa linha JSON (`key = 'users'`).
+- Se `DATABASE_URL` não estiver definida, usa `DATA_DIR/users.json` (só para testes locais).
+- Se a base de dados não responder no arranque, o servidor **aborta** em vez de arrancar vazio e sobrescrever contas.
 
 ## Executar localmente
 

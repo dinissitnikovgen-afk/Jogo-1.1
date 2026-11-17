@@ -150,37 +150,73 @@ function createEngine() {
 const catalog = createEngine(); // só para validar personagens e mapas
 
 
-// ------------------------------------------------------------------ contas (persistidas em disco)
-// IMPORTANTE: no Render sem disco persistente este ficheiro perde-se a cada deploy/reinício.
+// ------------------------------------------------------------------ contas (persistidas)
+// Se DATABASE_URL estiver definida, as contas ficam numa base de dados Postgres externa (sobrevive a deploys).
+// Sem DATABASE_URL usa o ficheiro DATA_DIR/users.json (só serve para testes locais ou com Disk no Render).
+const DATABASE_URL = process.env.DATABASE_URL || '';
+let pool = null;
+if (DATABASE_URL) {
+  const { Pool } = require('pg');
+  const local = /@(localhost|127\.0\.0\.1)[:/]/.test(DATABASE_URL);
+  pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: local ? false : { rejectUnauthorized: false },
+    max: 3,
+    idleTimeoutMillis: 10000,          // evita ligações paradas (bases serverless adormecem)
+    connectionTimeoutMillis: 15000,
+  });
+  pool.on('error', e => console.error('pg pool', e.message));
+}
+
 const users = new Map();            // chave (nome em minúsculas) -> registo
 const sessions = new Map();         // sha256(token) -> chave
-function loadUsers() {
+function ingestUsers(list) {
+  for (const u of list) {
+    if (!u || typeof u.key !== 'string') continue;
+    u.sessions = Array.isArray(u.sessions) ? u.sessions : [];
+    users.set(u.key, u);
+    for (const h of u.sessions) sessions.set(h, u.key);
+  }
+}
+async function loadUsers() {
+  if (pool) {
+    await pool.query(`CREATE TABLE IF NOT EXISTS kv (
+      key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`);
+    const r = await pool.query("SELECT value FROM kv WHERE key = 'users'");
+    if (r.rows.length && Array.isArray(r.rows[0].value)) ingestUsers(r.rows[0].value);
+    return;
+  }
   let text;
   try { text = fs.readFileSync(USERS_FILE, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') console.error('users.json', e); return; }
   try {
-    for (const u of JSON.parse(text)) {
-      if (!u || typeof u.key !== 'string') continue;
-      u.sessions = Array.isArray(u.sessions) ? u.sessions : [];
-      users.set(u.key, u);
-      for (const h of u.sessions) sessions.set(h, u.key);
-    }
+    ingestUsers(JSON.parse(text));
   } catch (e) {                      // ficheiro corrompido: guarda cópia e arranca vazio (nunca sobrescreve em silêncio)
     console.error('users.json corrompido, a guardar cópia', e);
     try { fs.copyFileSync(USERS_FILE, USERS_FILE + '.corrupt-' + Date.now()); } catch (_) {}
   }
 }
 let saveTimer = null;
+let dbQueue = Promise.resolve();
 function saveUsersNow() {
   clearTimeout(saveTimer); saveTimer = null;
+  const json = JSON.stringify([...users.values()]);
+  if (pool) {                        // gravações em série, para nunca chegarem fora de ordem
+    dbQueue = dbQueue
+      .then(() => pool.query(
+        `INSERT INTO kv (key, value) VALUES ('users', $1::jsonb)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, [json]))
+      .catch(e => console.error('Erro a guardar contas na base de dados', e.message));
+    return dbQueue;
+  }
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const tmp = USERS_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify([...users.values()]));
+    fs.writeFileSync(tmp, json);
     fs.renameSync(tmp, USERS_FILE);
   } catch (e) { console.error('Erro a guardar contas', e); }
+  return Promise.resolve();
 }
 function saveUsersSoon() { if (!saveTimer) saveTimer = setTimeout(saveUsersNow, 300); }
-loadUsers();
 
 const scrypt = (pw, salt) => new Promise((res, rej) => crypto.scrypt(pw, salt, 64, (e, k) => (e ? rej(e) : res(k))));
 const DUMMY_SALT = crypto.randomBytes(16);
@@ -680,9 +716,13 @@ setInterval(loop, 4);
 process.on('uncaughtException', e => console.error('uncaughtException', e));
 process.on('unhandledRejection', e => console.error('unhandledRejection', e));
 function shutdown() {
-  saveUsersNow();
   for (const room of rooms.values()) broadcast(room, { type: 'error', message: 'Servidor a reiniciar. Volta a criar a sala em instantes.' });
-  server.close(); setTimeout(() => process.exit(0), 500);
+  server.close();
+  Promise.race([saveUsersNow(), new Promise(r => setTimeout(r, 5000))]).then(() => setTimeout(() => process.exit(0), 300));
 }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
-server.listen(PORT, () => console.log(`Brawl Central ativo na porta ${PORT} (sim 60 Hz, snapshots ${SNAP_HZ} Hz, ${users.size} contas em ${DATA_DIR})`));
+// Só começa a aceitar pedidos depois de carregar as contas. Se o carregamento falhar, aborta
+// (em vez de arrancar vazio e depois sobrescrever as contas existentes).
+loadUsers().then(() => {
+  server.listen(PORT, () => console.log(`Brawl Central ativo na porta ${PORT} (sim 60 Hz, snapshots ${SNAP_HZ} Hz, ${users.size} contas, armazenamento: ${pool ? 'Postgres' : DATA_DIR})`));
+}).catch(e => { console.error('Falha a carregar contas; a abortar para não perder dados:', e); process.exit(1); });
