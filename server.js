@@ -113,9 +113,11 @@ let ENGINE_SCRIPT = buildEngineScript();
 
 function createEngine() {
   const canvas = makeCanvas();
-  const elements = { game: canvas, modalOverlay: { style: {} }, modalInput: { value: '', focus() {}, blur() {}, addEventListener() {} } };
+  const stubEl = () => ({ style: {}, value: '', classList: { add() {}, remove() {}, toggle() {} }, addEventListener() {}, focus() {}, blur() {} });
+  const elements = { game: canvas };
   const document = {
-    getElementById(id) { return elements[id] || (elements[id] = { style: {}, addEventListener() {}, focus() {}, blur() {} }); },
+    getElementById(id) { return elements[id] || (elements[id] = stubEl()); },
+    querySelectorAll() { return []; },
     createElement() { return makeCanvas(); },
     fonts: { load() { return Promise.resolve(); } },
     hidden: false, addEventListener() {},
