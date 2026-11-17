@@ -393,6 +393,11 @@ function drawNetOverlay() {
   }
   ctx.restore();
 }
+function hostGame() { connectCentral('create'); }
+function joinGame(code) {
+  if (!/^\d{6}$/.test(String(code))) { netError = 'O código tem de ter 6 números.'; return; }
+  connectCentral('join', String(code));
+}
 function netCancel(resetScreen = true) {
   const old = socket; socket = null;
   if (old) {
@@ -1325,7 +1330,7 @@ function drawMenuPanel() {
   g = ctx.createLinearGradient(x, y, x + w, y + h); g.addColorStop(0, '#0d6b7a'); g.addColorStop(1, '#1aa5a0'); ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
   ctx.font = '70px system-ui'; ctx.globalAlpha = 0.25; ctx.textAlign = 'right'; ctx.fillStyle = '#fff'; ctx.fillText('🌐', x + w - 16, y + 80); ctx.globalAlpha = 1;
   ctx.textAlign = 'left'; ctx.fillStyle = '#fff'; ctx.font = '26px ' + FONT; ctx.fillText('Jogue online com um amigo', x + 22, y + 52);
-  ctx.fillStyle = '#d8fffb'; ctx.font = '16px system-ui'; ctx.fillText('Crie uma sala e partilhe', x + 22, y + 88); ctx.fillText('o código de 4 números.', x + 22, y + 110);
+  ctx.fillStyle = '#d8fffb'; ctx.font = '16px system-ui'; ctx.fillText('Crie uma sala e partilhe', x + 22, y + 88); ctx.fillText('o código de 6 números.', x + 22, y + 110);
   ctx.restore();
   ctx.strokeStyle = hv ? '#fff' : '#7fe0d8'; ctx.lineWidth = 3; roundRect(x, y, w, h, 12); ctx.stroke();
   if (hv && mouse.click) S.menuSub = 'online';
@@ -1539,7 +1544,7 @@ function drawGameOver() {
 // ============================================================
 let lastTime = performance.now();
 
-function loop(now) {
+function frame(now) {
   const dt = Math.min(3, (now - lastTime) / 16.67); lastTime = now;
 
   if (S.screen === 'playing') {
@@ -1552,7 +1557,12 @@ function loop(now) {
       update(dt); S.frame += dt;
     }
   }
-  render(); drawNetOverlay(); canvas.style.cursor = uiHover ? 'pointer' : 'default'; uiHover = false; mouse.click = false; requestAnimationFrame(loop);
+  render(); drawNetOverlay(); canvas.style.cursor = uiHover ? 'pointer' : 'default'; uiHover = false; mouse.click = false;
+}
+function loop(now) {
+  try { frame(now); }
+  catch (e) { console.error(e); try { ctx.setTransform(1, 0, 0, 1, 0, 0); } catch (_) {} uiHover = false; mouse.click = false; }
+  requestAnimationFrame(loop);
 }
 
 function update(dt) {
