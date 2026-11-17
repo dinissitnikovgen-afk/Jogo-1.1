@@ -10,3 +10,11 @@ services:
         value: production
       - key: SNAP_HZ        # 20, 30 ou 60 snapshots por segundo
         value: "30"
+      - key: DATA_DIR       # onde ficam as contas (users.json)
+        value: /var/data
+    # As contas só sobrevivem a deploys/reinícios com um disco persistente (requer plano pago).
+    # Descomenta para o ativar; sem ele, o Render apaga as contas a cada deploy.
+    # disk:
+    #   name: brawl-data
+    #   mountPath: /var/data
+    #   sizeGB: 1

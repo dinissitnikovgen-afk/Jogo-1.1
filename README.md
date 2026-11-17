@@ -34,6 +34,38 @@ Esta versão substitui PeerJS/WebRTC e as credenciais TURN do Metered por um ser
 
 > Nota: o ficheiro `public/index.html` continua a ser a fonte do motor de jogo, por isso o servidor valida no arranque que os pontos de integração existem.
 
+## Contas, Ranked e Leaderboard (v3)
+
+**Contas**
+- Botão **Cadastrar / Entrar** no menu (no lugar de "Convidado"). Nome (3–16 caracteres: letras, números, `_`, `-`) e senha (mínimo 4).
+- As senhas são guardadas com `scrypt` + sal (nunca em texto simples). A sessão fica no browser e é revalidada no servidor.
+- Bloqueio de 5 min após 5 senhas erradas na mesma conta e limite de pedidos por IP.
+- As contas ficam em `DATA_DIR/users.json` (por omissão `./data/users.json`).
+
+**Ranked** (exige conta; convidados veem a janela de login)
+- Fila automática: o 1.º a entrar é o Jogador 1 e espera; quando entra o 2.º começa logo a escolha de personagens.
+- Ambos escolhem o personagem (45 s; se não escolherem, é sorteado) e votam no mapa (25 s). Não há "Host" em ranked: o servidor avança sozinho.
+- Sair a meio da partida ou perder a ligação mais de 20 s conta como **derrota** (e vitória para o adversário). Sair antes de a partida começar não altera o elo.
+- Se os dois perderem a ligação, a partida é anulada.
+
+**Elo**
+- 1.ª partida ranked: **200** se ganhar, **150** se perder. A partir daí: **+50** por vitória e **-50** por derrota (nunca abaixo de 0).
+
+**Leaderboard**
+- Botão no menu principal: top 100 por elo (desempate por vitórias), com vitórias e derrotas. Só aparecem jogadores que já jogaram ranked.
+
+**Nome sobre o personagem**
+- Em partidas online mostra-se o nome da conta, pequeno, por cima de cada personagem (em salas de amigos sem conta aparece "Jogador 1/2").
+
+**API HTTP:** `POST /api/register`, `POST /api/login`, `POST /api/logout`, `GET /api/me`, `GET /api/leaderboard`.
+
+### ⚠️ Persistência das contas no Render
+O disco do Render é **temporário**: sem disco persistente, `users.json` apaga-se a cada deploy/reinício e todas as contas e elos desaparecem. Opções:
+1. Plano pago + **Disk** (descomenta o bloco `disk` no `render.yaml` e define `DATA_DIR=/var/data`).
+2. Mudar o armazenamento para uma base de dados externa (ex.: Postgres). A lógica está concentrada nas funções `loadUsers`/`saveUsersNow` do `server.js`.
+
+Não faças commit da pasta `data/` (já está no `.gitignore`).
+
 ## Executar localmente
 
 1. Instala Node.js 20 ou superior.

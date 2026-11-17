@@ -21,6 +21,15 @@ const IDLE_ROOM_MS = 10 * 60 * 1000;                         // salas sem jogo a
 const HEARTBEAT_MS = 15000;
 const MAX_BUFFERED = 64 * 1024;                              // não acumular snapshots em ligações lentas
 const MSG_BURST = 120, MSG_RATE = 90;                        // anti-flood (mensagens/seg)
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');   // contas (users.json)
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const MAX_USERS = Number(process.env.MAX_USERS || 50000);
+const NAME_RE = /^[\p{L}\p{N}_-]{3,16}$/u;
+// Elo: 1.ª partida ranked -> 200 (vitória) ou 150 (derrota); depois +50 / -50 (mínimo 0)
+const FIRST_WIN_ELO = 200, FIRST_LOSS_ELO = 150, ELO_WIN = 50, ELO_LOSS = 50;
+const RANKED_PICK_MS = 45000;      // tempo para escolher personagem (depois é escolhido ao acaso)
+const RANKED_ADVANCE_MS = 2500;    // pausa depois de os dois escolherem, antes da votação do mapa
+const RANKED_VOTE_MS = 25000;      // tempo para votar no mapa
 const KEYS = ['left', 'right', 'jump', 'down', 'dodge', 'light', 'heavy', 'special'];
 
 const rooms = new Map();
@@ -140,6 +149,179 @@ function createEngine() {
 }
 const catalog = createEngine(); // só para validar personagens e mapas
 
+
+// ------------------------------------------------------------------ contas (persistidas em disco)
+// IMPORTANTE: no Render sem disco persistente este ficheiro perde-se a cada deploy/reinício.
+const users = new Map();            // chave (nome em minúsculas) -> registo
+const sessions = new Map();         // sha256(token) -> chave
+function loadUsers() {
+  let text;
+  try { text = fs.readFileSync(USERS_FILE, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') console.error('users.json', e); return; }
+  try {
+    for (const u of JSON.parse(text)) {
+      if (!u || typeof u.key !== 'string') continue;
+      u.sessions = Array.isArray(u.sessions) ? u.sessions : [];
+      users.set(u.key, u);
+      for (const h of u.sessions) sessions.set(h, u.key);
+    }
+  } catch (e) {                      // ficheiro corrompido: guarda cópia e arranca vazio (nunca sobrescreve em silêncio)
+    console.error('users.json corrompido, a guardar cópia', e);
+    try { fs.copyFileSync(USERS_FILE, USERS_FILE + '.corrupt-' + Date.now()); } catch (_) {}
+  }
+}
+let saveTimer = null;
+function saveUsersNow() {
+  clearTimeout(saveTimer); saveTimer = null;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmp = USERS_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify([...users.values()]));
+    fs.renameSync(tmp, USERS_FILE);
+  } catch (e) { console.error('Erro a guardar contas', e); }
+}
+function saveUsersSoon() { if (!saveTimer) saveTimer = setTimeout(saveUsersNow, 300); }
+loadUsers();
+
+const scrypt = (pw, salt) => new Promise((res, rej) => crypto.scrypt(pw, salt, 64, (e, k) => (e ? rej(e) : res(k))));
+const DUMMY_SALT = crypto.randomBytes(16);
+const hashToken = t => crypto.createHash('sha256').update(t).digest('hex');
+const publicUser = u => ({ name: u.name, elo: u.elo, wins: u.wins, losses: u.losses });
+function createSession(u) {
+  const token = crypto.randomBytes(24).toString('hex');
+  const h = hashToken(token);
+  u.sessions.push(h); sessions.set(h, u.key);
+  while (u.sessions.length > 5) sessions.delete(u.sessions.shift());
+  saveUsersSoon();
+  return token;
+}
+function userByToken(token) {
+  if (typeof token !== 'string' || token.length < 10 || token.length > 100) return null;
+  const key = sessions.get(hashToken(token));
+  return key ? users.get(key) || null : null;
+}
+const httpErr = (status, message) => Object.assign(new Error(message), { status });
+const loginFails = new Map();       // chave -> {n, until}  (bloqueio por conta, não depende do IP)
+
+async function apiAuth(kind, body) {
+  const name = String((body && body.name) || '').trim().normalize('NFC');
+  const password = body && typeof body.password === 'string' ? body.password : '';
+  if (!NAME_RE.test(name)) throw httpErr(400, 'O nome deve ter 3 a 16 caracteres (letras, números, _ ou -).');
+  if (password.length < 4 || password.length > 64) throw httpErr(400, 'A senha deve ter entre 4 e 64 caracteres.');
+  const key = name.toLowerCase();
+  if (kind === 'register') {
+    if (users.has(key)) throw httpErr(409, 'Esse nome já está em uso.');
+    if (users.size >= MAX_USERS) throw httpErr(503, 'Registos temporariamente fechados.');
+    const salt = crypto.randomBytes(16);
+    const hash = await scrypt(password, salt);
+    if (users.has(key)) throw httpErr(409, 'Esse nome já está em uso.');       // corrida durante o hash
+    const u = { key, name, salt: salt.toString('hex'), hash: hash.toString('hex'), elo: 0, wins: 0, losses: 0, created: Date.now(), sessions: [] };
+    users.set(key, u);
+    return { user: publicUser(u), token: createSession(u) };
+  }
+  const f = loginFails.get(key);
+  if (f && f.until > now()) throw httpErr(429, 'Demasiadas tentativas. Tenta daqui a uns minutos.');
+  const u = users.get(key);
+  const hash = await scrypt(password, u ? Buffer.from(u.salt, 'hex') : DUMMY_SALT);
+  if (!u || !crypto.timingSafeEqual(hash, Buffer.from(u.hash, 'hex'))) {
+    const n = ((f && f.n) || 0) + 1;
+    loginFails.set(key, n >= 5 ? { n: 0, until: now() + 5 * 60 * 1000 } : { n, until: 0 });
+    throw httpErr(401, 'Nome ou senha incorretos.');
+  }
+  loginFails.delete(key);
+  return { user: publicUser(u), token: createSession(u) };
+}
+let lbCache = { t: 0, rows: [] };
+function leaderboard() {
+  if (now() - lbCache.t < 3000) return lbCache.rows;
+  const rows = [...users.values()].filter(u => u.wins + u.losses > 0)
+    .sort((a, b) => b.elo - a.elo || b.wins - a.wins || a.losses - b.losses || a.name.localeCompare(b.name))
+    .slice(0, 100).map((u, i) => ({ rank: i + 1, name: u.name, elo: u.elo, wins: u.wins, losses: u.losses }));
+  lbCache = { t: now(), rows };
+  return rows;
+}
+
+// ------------------------------------------------------------------ Ranked: fila + elo
+const rankedQueue = [];             // {ws, key, since}
+const rankedRooms = new Map();      // chave de utilizador -> código da sala ranked em curso
+function removeFromQueue(ws) { const i = rankedQueue.findIndex(e => e.ws === ws); if (i >= 0) rankedQueue.splice(i, 1); }
+function queueRanked(ws) {
+  const user = ws.userKey && users.get(ws.userKey);
+  if (!user) return send(ws, { type: 'needAuth' });
+  if (ws.roomCode) leave(ws);
+  const live = rankedRooms.get(user.key);
+  if (live && rooms.has(live)) return send(ws, { type: 'error', message: 'Já tens uma partida ranked em curso.' });
+  if (rooms.size >= MAX_ROOMS) return send(ws, { type: 'error', message: 'Servidor cheio. Tenta daqui a pouco.' });
+  for (let i = rankedQueue.length - 1; i >= 0; i--) {                 // uma única entrada por conta
+    if (rankedQueue[i].ws === ws || rankedQueue[i].key === user.key) {
+      const old = rankedQueue.splice(i, 1)[0];
+      if (old.ws !== ws) send(old.ws, { type: 'error', message: 'Entraste na fila noutra janela.' });
+    }
+  }
+  rankedQueue.push({ ws, key: user.key, since: now() });
+  send(ws, { type: 'queued' });
+  tryMatch();
+}
+function tryMatch() {
+  while (rankedQueue.length >= 2) {
+    const a = rankedQueue.shift(), b = rankedQueue.shift();
+    if (a.ws.readyState !== WebSocket.OPEN) { rankedQueue.unshift(b); continue; }
+    if (b.ws.readyState !== WebSocket.OPEN) { rankedQueue.unshift(a); continue; }
+    createRankedRoom(a, b);                                            // o 1.º da fila é o Jogador 1
+  }
+}
+function createRankedRoom(a, b) {
+  const room = createRoom();
+  room.ranked = true;
+  room.accounts = [a.key, b.key];
+  room.names = [users.get(a.key).name, users.get(b.key).name];
+  room.pickDeadline = now() + RANKED_PICK_MS;
+  room.lastActive = now();
+  [a, b].forEach((e, i) => {
+    room.seats[i] = { ws: e.ws, token: newToken(), lostAt: 0 };
+    e.ws.roomCode = room.code; e.ws.seat = i; e.ws._seat = i;
+  });
+  rooms.set(room.code, room);
+  rankedRooms.set(a.key, room.code); rankedRooms.set(b.key, room.code);
+  [0, 1].forEach(i => send(room.seats[i].ws, { type: 'matched', seat: i, code: room.code, token: room.seats[i].token, names: room.names }));
+}
+// Aplica o resultado uma única vez (vitória normal ou abandono).
+function finishRanked(room, winnerSeat, forfeit = false) {
+  if (!room.ranked || room.eloApplied || (winnerSeat !== 0 && winnerSeat !== 1)) return;
+  room.eloApplied = true;
+  const results = [0, 1].map(s => {
+    const u = users.get(room.accounts[s]);
+    if (!u) return null;
+    const won = s === winnerSeat, first = u.wins + u.losses === 0, before = u.elo;
+    u.elo = first ? (won ? FIRST_WIN_ELO : FIRST_LOSS_ELO) : Math.max(0, u.elo + (won ? ELO_WIN : -ELO_LOSS));
+    if (won) u.wins++; else u.losses++;
+    return { won, first, delta: first ? null : u.elo - before, elo: u.elo, wins: u.wins, losses: u.losses };
+  });
+  saveUsersSoon(); lbCache.t = 0;
+  results.forEach((r, s) => { const seat = room.seats[s]; if (r && seat && seat.ws) send(seat.ws, { type: 'rankedResult', forfeit, ...r }); });
+}
+// Escolha automática de personagem/mapa e avanço do lobby ranked (sem Host).
+function stepLobby(room) {
+  if (!room.ranked || !bothConnected(room)) return;
+  const t = now();
+  if (room.stage === 'waiting') {
+    if (!(room.picks[0] && room.picks[1]) && t > room.pickDeadline) {
+      const ids = Object.keys(catalog.CHARACTERS);
+      for (const i of [0, 1]) if (!room.picks[i]) room.picks[i] = ids[crypto.randomInt(ids.length)];
+      broadcast(room, { type: 'picks', p1: room.picks[0], p2: room.picks[1] });
+      room.advanceAt = t + RANKED_ADVANCE_MS;
+    }
+    if (room.advanceAt && t >= room.advanceAt && room.picks[0] && room.picks[1]) {
+      room.advanceAt = 0; room.stage = 'mapvote'; room.votes = [null, null]; room.voteDeadline = t + RANKED_VOTE_MS;
+      broadcast(room, { type: 'screen', screen: 'mapvote' });
+      broadcast(room, { type: 'voteUpdate', votes: {} });
+    }
+  } else if (room.stage === 'mapvote' && t > room.voteDeadline) {
+    const ids = Object.keys(catalog.MAPS);
+    for (const i of [0, 1]) if (!room.votes[i]) room.votes[i] = ids[crypto.randomInt(ids.length)];
+    beginMatch(room, room.votes[0]);
+  }
+}
+
 // ------------------------------------------------------------------ utilidades
 const emptyInput = () => ({ left: false, right: false, jump: false, down: false, dodge: false, light: false, heavy: false, special: false });
 const now = () => Date.now();
@@ -166,7 +348,9 @@ function createRoom() {
     picks: [null, null], votes: [null, null],
     inputs: [emptyInput(), emptyInput()],
     latch: [emptyInput(), emptyInput()],   // garante que toques curtos (<1 tick) não se perdem
-    mapId: null, engine: null, tickCount: 0, lastActive: now()
+    mapId: null, engine: null, tickCount: 0, lastActive: now(),
+    ranked: false, accounts: [null, null], names: [null, null], eloApplied: false,
+    pickDeadline: 0, advanceAt: 0, voteDeadline: 0
   };
 }
 function destroyRoom(room, notifyMsg) {
@@ -174,6 +358,7 @@ function destroyRoom(room, notifyMsg) {
   if (notifyMsg) broadcast(room, notifyMsg);
   for (const seat of room.seats) if (seat && seat.ws) { seat.ws.roomCode = null; seat.ws.seat = null; }
   room.engine = null;
+  if (room.ranked) for (const k of room.accounts) if (rankedRooms.get(k) === room.code) rankedRooms.delete(k);
   rooms.delete(room.code);
 }
 function roomFor(ws) { return ws.roomCode ? rooms.get(ws.roomCode) : null; }
@@ -184,7 +369,11 @@ function leave(ws, intentional = true) {
   const seat = room.seats[ws.seat];
   if (!seat || seat.ws !== ws) return;
   ws.roomCode = null; ws.seat = null;
-  if (intentional) { seat.ws = null; destroyRoom(room, { type: 'left' }); return; }
+  if (intentional) {
+    seat.ws = null;
+    if (room.ranked && room.stage === 'playing') finishRanked(room, 1 - (ws._seat ?? 0), true);   // sair a meio = derrota
+    destroyRoom(room, { type: 'left' }); return;
+  }
   // Queda de ligação: guarda o lugar e espera pela reconexão.
   seat.ws = null; seat.lostAt = now();
   room.inputs[ws._seat ?? 0] = emptyInput();
@@ -198,7 +387,7 @@ function currentScreen(room) {
   if (room.stage === 'mapvote') return 'mapvote';
   return bothSeated(room) ? 'charselect' : 'waiting';
 }
-function startPayload(room) { return { type: 'start', p1: room.picks[0], p2: room.picks[1], mapId: room.mapId, tickHz: 60, snapEvery: SNAP_EVERY }; }
+function startPayload(room) { return { type: 'start', p1: room.picks[0], p2: room.picks[1], mapId: room.mapId, tickHz: 60, snapEvery: SNAP_EVERY, names: room.names, ranked: room.ranked }; }
 
 function beginMatch(room, mapId) {
   if (room.stage !== 'mapvote' || !bothSeated(room)) return;
@@ -225,12 +414,21 @@ function onMessage(ws, raw) {
 
   if (msg.type === 'ping') return send(ws, { type: 'pong', t: msg.t });
 
+  if (msg.type === 'auth') {
+    const u = userByToken(msg.token);
+    ws.userKey = u ? u.key : null;
+    return send(ws, u ? { type: 'authed', user: publicUser(u) } : { type: 'authFail' });
+  }
+  if (msg.type === 'rankedJoin') return queueRanked(ws);
+  if (msg.type === 'rankedCancel' || (msg.type === 'leave' && !ws.roomCode)) { removeFromQueue(ws); return; }
+
   if (msg.type === 'create') {
     if (ws.roomCode) leave(ws);
     if (rooms.size >= MAX_ROOMS) return send(ws, { type: 'error', message: 'Servidor cheio. Tenta daqui a pouco.' });
     const room = createRoom();
     const token = newToken();
     room.seats[0] = { ws, token, lostAt: 0 };
+    room.names[0] = ws.userKey && users.get(ws.userKey) ? users.get(ws.userKey).name : null;
     rooms.set(room.code, room); ws.roomCode = room.code; ws.seat = 0; ws._seat = 0;
     return send(ws, { type: 'roomCreated', code: room.code, token });
   }
@@ -244,7 +442,8 @@ function onMessage(ws, raw) {
       return send(ws, { type: 'error', message: 'Sala inexistente ou cheia.' });
     }
     const token = newToken();
-    room.seats[1] = { ws, token, lostAt: 0 }; ws.roomCode = code; ws.seat = 1; ws._seat = 1;
+    room.seats[1] = { ws, token, lostAt: 0 }; ws.roomCode = code;
+    room.names[1] = ws.userKey && users.get(ws.userKey) ? users.get(ws.userKey).name : null; ws.seat = 1; ws._seat = 1;
     room.lastActive = now();
     send(ws, { type: 'joined', code, token });
     broadcast(room, { type: 'playerJoined' });
@@ -262,7 +461,7 @@ function onMessage(ws, raw) {
     send(ws, {
       type: 'resumed', seat: seatNo, code: room.code, screen: currentScreen(room),
       p1: room.picks[0], p2: room.picks[1], mapId: room.mapId, tickHz: 60, snapEvery: SNAP_EVERY,
-      votes: countVotes(room)
+      votes: countVotes(room), names: room.names, ranked: room.ranked
     });
     if (room.stage === 'playing' && room.engine) send(ws, { type: 'state', ...room.engine.snapshot(false) });
     const other = room.seats[1 - seatNo];
@@ -287,9 +486,10 @@ function onMessage(ws, raw) {
     if (!catalog.CHARACTERS[char]) return;
     room.picks[seatNo] = char;
     broadcast(room, { type: 'picks', p1: room.picks[0], p2: room.picks[1] });
+    if (room.ranked) room.advanceAt = room.picks[0] && room.picks[1] ? now() + RANKED_ADVANCE_MS : 0;   // ranked avança sozinho
     return;
   }
-  if (msg.type === 'ready' && seatNo === 0 && room.stage === 'waiting' && room.picks[0] && room.picks[1] && bothSeated(room)) {
+  if (msg.type === 'ready' && !room.ranked && seatNo === 0 && room.stage === 'waiting' && room.picks[0] && room.picks[1] && bothSeated(room)) {
     room.stage = 'mapvote'; room.votes = [null, null];
     broadcast(room, { type: 'screen', screen: 'mapvote' });
     broadcast(room, { type: 'voteUpdate', votes: {} });
@@ -329,7 +529,56 @@ function loadFile(resolved, cb) {
     });
   });
 }
+
+// ------------------------------------------------------------------ HTTP API (contas + leaderboard)
+const apiHits = new Map();          // ip -> {n, t}
+setInterval(() => { const t = now(); for (const [k, v] of apiHits) if (t - v.t > 10 * 60 * 1000) apiHits.delete(k); for (const [k, v] of loginFails) if (v.until && v.until < t) loginFails.delete(k); }, 60000).unref();
+function clientIp(req) { const x = req.headers['x-forwarded-for']; return (typeof x === 'string' && x.split(',')[0].trim()) || req.socket.remoteAddress || '?'; }
+function limited(ip, max) {         // 'max' pedidos por janela de 10 min
+  const t = now(), h = apiHits.get(ip);
+  if (!h || t - h.t > 10 * 60 * 1000) { apiHits.set(ip, { n: 1, t }); return false; }
+  return ++h.n > max;
+}
+function sendJson(res, status, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': Buffer.byteLength(body) });
+  res.end(body);
+}
+function readJson(req, limit = 2048) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', c => { size += c.length; if (size > limit) { reject(httpErr(413, 'Pedido demasiado grande.')); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch (_) { reject(httpErr(400, 'JSON inválido.')); } });
+    req.on('error', reject);
+  });
+}
+const bearer = req => { const h = req.headers.authorization || ''; return h.startsWith('Bearer ') ? h.slice(7).trim() : ''; };
+async function handleApi(req, res, pathname) {
+  try {
+    if (pathname === '/api/leaderboard' && req.method === 'GET') return sendJson(res, 200, { rows: leaderboard() });
+    if (pathname === '/api/me' && req.method === 'GET') {
+      const u = userByToken(bearer(req));
+      return u ? sendJson(res, 200, { user: publicUser(u) }) : sendJson(res, 401, { error: 'Sessão inválida.' });
+    }
+    if (req.method !== 'POST') return sendJson(res, 405, { error: 'Método não permitido.' });
+    if (pathname === '/api/logout') {
+      const token = bearer(req), u = userByToken(token);
+      if (u) { const h = hashToken(token); u.sessions = u.sessions.filter(x => x !== h); sessions.delete(h); saveUsersSoon(); }
+      return sendJson(res, 200, { ok: true });
+    }
+    if (pathname === '/api/register' || pathname === '/api/login') {
+      if (limited(clientIp(req), pathname === '/api/register' ? 10 : 40)) throw httpErr(429, 'Demasiados pedidos. Tenta daqui a uns minutos.');
+      const out = await apiAuth(pathname === '/api/register' ? 'register' : 'login', await readJson(req));
+      return sendJson(res, 200, out);
+    }
+    return sendJson(res, 404, { error: 'Não encontrado.' });
+  } catch (e) {
+    if (!e.status) console.error('api', e);
+    return sendJson(res, e.status || 500, { error: e.status ? e.message : 'Erro interno.' });
+  }
+}
 const server = http.createServer((req, res) => {
+  if (req.url.startsWith('/api/')) return handleApi(req, res, req.url.split('?')[0]);
   if (req.url === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok'); }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end(); }
   let pathname;
@@ -363,7 +612,7 @@ wss.on('connection', (ws, req) => {
   ws.roomCode = null; ws.seat = null; ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   ws.on('message', raw => { ws.isAlive = true; try { onMessage(ws, raw); } catch (e) { console.error('onMessage', e); } });
-  ws.on('close', () => leave(ws, false));
+  ws.on('close', () => { removeFromQueue(ws); leave(ws, false); });
   ws.on('error', () => { try { ws.terminate(); } catch (_) {} });
 });
 
@@ -381,7 +630,11 @@ setInterval(() => {
   const t = now();
   for (const room of [...rooms.values()]) {
     const lost = room.seats.find(s => s && !s.ws);
-    if (lost && t - lost.lostAt > RECONNECT_GRACE_MS) { destroyRoom(room, { type: 'left' }); continue; }
+    if (lost && t - lost.lostAt > RECONNECT_GRACE_MS) {
+      const lostSeats = [0, 1].filter(i => room.seats[i] && !room.seats[i].ws);
+      if (room.ranked && room.stage === 'playing' && lostSeats.length === 1) finishRanked(room, 1 - lostSeats[0], true);   // abandono por queda
+      destroyRoom(room, { type: 'left' }); continue;                                                                     // (os dois caídos: partida anulada)
+    }
     if (t - room.lastActive > IDLE_ROOM_MS && room.stage !== 'playing') destroyRoom(room, { type: 'left' });
   }
 }, 2000).unref();
@@ -391,6 +644,7 @@ setInterval(() => {
 // arredondava para 16/17 ms e deixava o jogo mais lento/rápido).
 let acc = 0, last = performance.now();
 function stepRoom(room) {
+  stepLobby(room);
   if (room.stage !== 'playing' || !room.engine) return;
   if (!bothConnected(room)) return;                          // pausa enquanto alguém reconecta
   // inputs efetivos = estado atual OU toque ocorrido entre ticks
@@ -403,6 +657,7 @@ function stepRoom(room) {
     const snap = room.engine.snapshot();
     broadcast(room, { type: 'state', ...snap });
     broadcast(room, { type: 'gameover', winnerIdx: snap.winnerIdx });
+    finishRanked(room, snap.winnerIdx);
     room.engine = null;
     return;
   }
@@ -425,8 +680,9 @@ setInterval(loop, 4);
 process.on('uncaughtException', e => console.error('uncaughtException', e));
 process.on('unhandledRejection', e => console.error('unhandledRejection', e));
 function shutdown() {
+  saveUsersNow();
   for (const room of rooms.values()) broadcast(room, { type: 'error', message: 'Servidor a reiniciar. Volta a criar a sala em instantes.' });
   server.close(); setTimeout(() => process.exit(0), 500);
 }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
-server.listen(PORT, () => console.log(`Brawl Central ativo na porta ${PORT} (sim 60 Hz, snapshots ${SNAP_HZ} Hz)`));
+server.listen(PORT, () => console.log(`Brawl Central ativo na porta ${PORT} (sim 60 Hz, snapshots ${SNAP_HZ} Hz, ${users.size} contas em ${DATA_DIR})`));

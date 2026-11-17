@@ -65,6 +65,37 @@
   }
   #modalClose:hover { filter: brightness(1.15); }
   .modal-tip { margin-top: 12px; color: #9fbcf0; font: 12.5px system-ui, sans-serif; }
+
+  /* ---- Janela Cadastrar / Entrar ---- */
+  #authOverlay {
+    position: absolute; inset: 0; display: none; align-items: center; justify-content: center; z-index: 110;
+    background: rgba(8,20,50,0.55); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+    opacity: 0; transition: opacity .18s ease;
+  }
+  #authOverlay.open { opacity: 1; }
+  #authBox {
+    position: relative; width: min(92vw, 440px); padding: 26px 28px 18px; text-align: center;
+    background: linear-gradient(180deg, #2a6be0 0%, #17418f 100%); border: 4px solid #fff; border-radius: 24px;
+    box-shadow: 0 18px 50px rgba(0,10,60,0.6), inset 0 2px 0 rgba(255,255,255,0.35);
+    transform: translateY(16px) scale(.95); transition: transform .24s cubic-bezier(.2,1.3,.4,1);
+    font-family: 'Lilita One', 'Arial Black', system-ui, sans-serif;
+  }
+  #authOverlay.open #authBox { transform: none; }
+  #authBox.shake { animation: modalShake .38s; }
+  .auth-title { color: #fff; font-size: 34px; font-weight: normal; text-shadow: 0 3px 0 rgba(0,20,80,0.55); }
+  #authSub { min-height: 0; }
+  .auth-tabs { display: flex; gap: 8px; margin: 14px 0 14px; }
+  .auth-tab {
+    flex: 1; padding: 9px; font: 20px 'Lilita One', 'Arial Black', system-ui, sans-serif; color: #cfe0ff; cursor: pointer;
+    background: rgba(255,255,255,0.12); border: 3px solid transparent; border-radius: 14px;
+  }
+  .auth-tab.on { color: #fff; background: linear-gradient(180deg, #ffc15e, #f08a24); border-color: #fff; text-shadow: 0 2px 0 rgba(120,50,0,0.45); }
+  .auth-field {
+    display: block; width: 100%; margin: 0 0 10px; padding: 12px 14px; font: 17px system-ui, sans-serif; color: #102a43;
+    background: #fff; border: 3px solid #7fa6e8; border-radius: 12px; outline: 0;
+  }
+  .auth-field:focus { border-color: #ffb347; box-shadow: 0 0 0 4px rgba(255,179,71,0.35); }
+  #authError { min-height: 22px; margin: 2px 0 6px; color: #ffd2cc; font: bold 14px system-ui, sans-serif; }
 </style>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lilita+One&display=swap">
 </head>
@@ -86,6 +117,26 @@
       <button type="button" class="btn-cancel" onclick="closeModal()">Cancelar</button>
     </div>
     <div class="modal-tip">💡 Podes colar o código · Enter para entrar · Esc para fechar</div>
+  </div>
+</div>
+
+<div id="authOverlay">
+  <div id="authBox" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <h2 class="auth-title" id="authTitle">Entrar na conta</h2>
+    <p class="modal-sub" id="authSub" style="display:none"></p>
+    <div class="auth-tabs">
+      <button type="button" class="auth-tab on" id="authTabLogin">Entrar</button>
+      <button type="button" class="auth-tab" id="authTabReg">Cadastrar</button>
+    </div>
+    <input class="auth-field" id="authName" type="text" maxlength="16" autocomplete="username" spellcheck="false" placeholder="Nome de jogador" aria-label="Nome de jogador">
+    <input class="auth-field" id="authPass" type="password" maxlength="64" autocomplete="current-password" placeholder="Senha" aria-label="Senha">
+    <input class="auth-field" id="authPass2" type="password" maxlength="64" autocomplete="new-password" placeholder="Repetir senha" aria-label="Repetir senha" style="display:none">
+    <div id="authError" aria-live="polite"></div>
+    <div class="modal-actions">
+      <button type="button" id="authGo" class="btn-go">Entrar</button>
+      <button type="button" id="authCancel" class="btn-cancel">Cancelar</button>
+    </div>
+    <div class="modal-tip">Nome: 3 a 16 caracteres · Senha: mínimo 4 · Enter para confirmar</div>
   </div>
 </div>
 
@@ -232,7 +283,7 @@ const NET = {
 };
 function resetNetState() {
   clearTimeout(NET.retryTimer);
-  Object.assign(NET, { token:'', code:'', retry:0, retryTimer:null, reconnecting:false, peerLost:false, ping:0 });
+  Object.assign(NET, { token:'', code:'', retry:0, retryTimer:null, reconnecting:false, peerLost:false, ping:0, ranked:false, queueing:false, queueSince:0 });
   resetSnapshots();
 }
 function resetSnapshots() {
@@ -258,6 +309,7 @@ function openSocket(firstMsg) {
     if (socket !== ws) return;
     NET.lastMsg = performance.now();
     netStatus = NET.reconnecting ? 'A restabelecer a sala...' : 'Ligado ao servidor. A preparar sala...';
+    if (authToken) sendNet({ type:'auth', token:authToken });   // identifica a conta antes de criar/entrar/ranked
     sendNet(firstMsg());
   });
   ws.addEventListener('message', event => {
@@ -282,7 +334,12 @@ function onSocketLost() {
   if (!isMultiplayer) return;
   socket = null; netConnected = false;
   if (S.screen === 'gameover') return;
-  if (NET.token && NET.code && NET.retry < 10) {
+  if (NET.queueing && !NET.token && NET.retry < 10) {          // queda enquanto espera na fila ranked: volta a entrar
+    NET.reconnecting = true; netStatus = 'Ligação perdida. A reconectar...';
+    const wait = Math.min(3000, 400 * ++NET.retry);
+    clearTimeout(NET.retryTimer);
+    NET.retryTimer = setTimeout(() => { if (isMultiplayer && NET.queueing) openSocket(() => ({ type:'rankedJoin' })); }, wait);
+  } else if (NET.token && NET.code && NET.retry < 10) {
     NET.reconnecting = true; netStatus = 'Ligação perdida. A reconectar...';
     const wait = Math.min(3000, 400 * ++NET.retry);
     clearTimeout(NET.retryTimer);
@@ -311,7 +368,7 @@ function handleNet(data) {
     case 'picks': S.p1Char = data.p1; S.p2Char = data.p2; break;
     case 'voteUpdate': S.votes = data.votes || {}; break;
     case 'start':
-      S.p1Char = data.p1; S.p2Char = data.p2; NET.snapEvery = data.snapEvery || 2;
+      S.p1Char = data.p1; S.p2Char = data.p2; NET.snapEvery = data.snapEvery || 2; S.names = data.names || null;
       resetSnapshots(); startGame(data.mapId, true);
       netStatus = 'Partida iniciada no servidor central.'; break;
     case 'state': pushSnapshot(data); break;
@@ -329,10 +386,27 @@ function handleNet(data) {
       NET.reconnecting = false; NET.peerLost = false; NET.retry = 0; netError = '';
       mySeat = data.seat; isHost = data.seat === 0; S.mode = isHost ? 'mp_host' : 'mp_client';
       myRoomCode = data.code; netConnected = true; netStatus = 'Ligação restabelecida.';
-      S.p1Char = data.p1; S.p2Char = data.p2; NET.snapEvery = data.snapEvery || 2;
+      S.p1Char = data.p1; S.p2Char = data.p2; NET.snapEvery = data.snapEvery || 2; S.names = data.names || S.names;
       if (data.screen === 'playing') { resetSnapshots(); startGame(data.mapId, true); }
       else if (data.screen === 'gameover') { netCancel(); }
       else { S.screen = data.screen; if (data.screen === 'mapvote') S.votes = data.votes || {}; }
+      break;
+    case 'authed': if (data.user) setAccount(data.user); break;
+    case 'authFail': setAccount(null, ''); if (NET.ranked && NET.queueing) fatalNet('A tua sessão expirou. Entra outra vez na conta.'); break;
+    case 'needAuth': fatalNet('Precisas de uma conta para jogar Ranked.'); break;
+    case 'queued': NET.queueing = true; NET.reconnecting = false; NET.retry = 0; netStatus = 'À procura de um adversário...'; break;
+    case 'matched':
+      NET.queueing = false; NET.reconnecting = false; NET.retry = 0; NET.token = data.token; NET.code = data.code;
+      myRoomCode = data.code; mySeat = data.seat; isHost = data.seat === 0; S.mode = isHost ? 'mp_host' : 'mp_client';
+      S.names = data.names || null; S.p1Char = null; S.p2Char = null; S.ranked = null;
+      netConnected = true; netStatus = 'Adversário encontrado!'; S.screen = 'charselect'; break;
+    case 'rankedResult':
+      NET.peerLost = false;
+      S.ranked = { won:data.won, first:data.first, delta:data.delta, elo:data.elo, forfeit:!!data.forfeit };
+      if (ACCOUNT) { ACCOUNT.elo = data.elo; ACCOUNT.wins = data.wins; ACCOUNT.losses = data.losses; ACCOUNT.games = data.wins + data.losses; }
+      if (data.forfeit && S.screen === 'playing') {            // o adversário saiu a meio: vitória por abandono
+        S.winner = S.players.find(p => p.idx === mySeat) || S.players[0]; S.screen = 'gameover'; S.shake = 0; S.hitlag = 0;
+      }
       break;
     case 'resumeFailed': fatalNet('A sala já não existe. Cria ou entra numa nova.'); break;
     case 'error':
@@ -455,12 +529,125 @@ function drawNetOverlay() {
     ctx.fillStyle = ms < 60 ? '#7cfc7c' : ms < 120 ? '#ffd24a' : '#ff6a5a';
     ctx.strokeText(ms + ' ms', W - 12, H - 12); ctx.fillText(ms + ' ms', W - 12, H - 12);
   }
-  if (msg && S.screen !== 'waiting') {
+  if (msg && S.screen !== 'waiting' && S.screen !== 'gameover') {
     ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, H/2 - 45, W, 90);
     ctx.fillStyle = '#fff'; ctx.font = 'bold 30px system-ui'; ctx.textAlign = 'center'; ctx.fillText(msg, W/2, H/2 + 11);
   }
   ctx.restore();
 }
+// ============================================================
+// CONTAS, RANKED E LEADERBOARD
+// ============================================================
+const SESSION_KEY = 'brawl_session';
+const HAS_DOM = typeof localStorage !== 'undefined';     // false no motor que corre no servidor
+let ACCOUNT = null;                                      // { name, elo, wins, losses, games } com sessão iniciada
+let authToken = '';
+function storeSession(tok) { try { if (tok) localStorage.setItem(SESSION_KEY, tok); else localStorage.removeItem(SESSION_KEY); } catch (_) {} }
+function setAccount(user, token) {
+  if (token !== undefined) { authToken = token || ''; storeSession(authToken); }
+  ACCOUNT = user ? { name:user.name, elo:user.elo, wins:user.wins, losses:user.losses, games:user.wins + user.losses } : null;
+}
+async function apiCall(path, opts = {}) {
+  const headers = { 'Content-Type':'application/json' };
+  if (authToken) headers.Authorization = 'Bearer ' + authToken;
+  const res = await fetch(path, { ...opts, headers });
+  let data = null; try { data = await res.json(); } catch (_) {}
+  if (!res.ok) { const err = new Error((data && data.error) || 'Sem ligação ao servidor.'); err.status = res.status; throw err; }
+  return data;
+}
+function refreshAccount() {
+  if (!authToken) return;
+  apiCall('/api/me').then(d => setAccount(d.user)).catch(e => { if (e.status === 401) setAccount(null, ''); });
+}
+function logout() {
+  apiCall('/api/logout', { method:'POST' }).catch(() => {});
+  setAccount(null, '');
+}
+
+// ---- Janela Cadastrar / Entrar ----
+const authEl = id => document.getElementById(id);
+const auth = { mode:'login', busy:false, after:null };
+function authSetMode(mode) {
+  auth.mode = mode;
+  authEl('authTabLogin').classList.toggle('on', mode === 'login');
+  authEl('authTabReg').classList.toggle('on', mode === 'register');
+  authEl('authPass2').style.display = mode === 'register' ? 'block' : 'none';
+  authEl('authPass').autocomplete = mode === 'register' ? 'new-password' : 'current-password';
+  authEl('authGo').textContent = mode === 'register' ? 'Criar conta' : 'Entrar';
+  authEl('authTitle').textContent = mode === 'register' ? 'Criar conta' : 'Entrar na conta';
+  authEl('authError').textContent = '';
+}
+function authOpen(mode = 'login', reason = '', after = null) {
+  auth.after = after; authSetMode(mode);
+  const sub = authEl('authSub'); sub.textContent = reason; sub.style.display = reason ? 'block' : 'none';
+  const ov = authEl('authOverlay'); ov.style.display = 'flex'; void ov.offsetWidth; ov.classList.add('open');
+  authEl('authName').focus();
+}
+function authClose() {
+  const ov = authEl('authOverlay'); ov.classList.remove('open'); ov.style.display = 'none';
+  authEl('authPass').value = ''; authEl('authPass2').value = ''; authEl('authError').textContent = '';
+  for (const id of ['authName', 'authPass', 'authPass2']) authEl(id).blur();
+  auth.after = null;
+}
+function authFail(msg) {
+  authEl('authError').textContent = msg;
+  const box = authEl('authBox'); box.classList.remove('shake'); void box.offsetWidth; box.classList.add('shake');
+}
+async function authSubmit() {
+  if (auth.busy) return;
+  const name = authEl('authName').value.trim(), pass = authEl('authPass').value;
+  if (!/^[\p{L}\p{N}_-]{3,16}$/u.test(name)) return authFail('O nome deve ter 3 a 16 caracteres (letras, números, _ ou -).');
+  if (pass.length < 4) return authFail('A senha deve ter pelo menos 4 caracteres.');
+  if (auth.mode === 'register' && pass !== authEl('authPass2').value) return authFail('As senhas não coincidem.');
+  auth.busy = true; authEl('authGo').disabled = true;
+  try {
+    const d = await apiCall('/api/' + auth.mode, { method:'POST', body:JSON.stringify({ name, password:pass }) });
+    setAccount(d.user, d.token);
+    const next = auth.after; authClose();
+    if (next) next();
+  } catch (e) { authFail(e.message); }
+  finally { auth.busy = false; authEl('authGo').disabled = false; }
+}
+if (HAS_DOM) {
+  try { authToken = localStorage.getItem(SESSION_KEY) || ''; } catch (_) {}
+  refreshAccount();
+  authEl('authTabLogin').addEventListener('click', () => authSetMode('login'));
+  authEl('authTabReg').addEventListener('click', () => authSetMode('register'));
+  authEl('authGo').addEventListener('click', authSubmit);
+  authEl('authCancel').addEventListener('click', authClose);
+  authEl('authOverlay').addEventListener('mousedown', e => { if (e.target === authEl('authOverlay')) authClose(); });
+  for (const id of ['authName', 'authPass', 'authPass2']) authEl(id).addEventListener('keydown', e => {
+    e.stopPropagation();   // as teclas não chegam aos controlos do jogo
+    if (e.key === 'Enter') { e.preventDefault(); authSubmit(); } else if (e.key === 'Escape') authClose();
+  });
+}
+
+// ---- Ranked ----
+function startRanked() {
+  if (!ACCOUNT) { authOpen('login', 'Precisas de uma conta para jogar Ranked.', startRanked); return; }
+  netCancel(false);
+  isMultiplayer = true; isHost = false; mySeat = 0; S.mode = null; S.screen = 'waiting';
+  NET.ranked = true; NET.queueing = true; NET.queueSince = performance.now();
+  netConnected = false; netError = ''; netStatus = 'A ligar ao servidor central...';
+  openSocket(() => ({ type:'rankedJoin' }));
+}
+
+// ---- Leaderboard ----
+const LB = { rows:[], loading:false, error:'', scroll:0 };
+const LB_VISIBLE = 10;
+function openLeaderboard() {
+  S.screen = 'leaderboard'; LB.loading = true; LB.error = ''; LB.scroll = 0;
+  apiCall('/api/leaderboard')
+    .then(d => { LB.rows = d.rows || []; })
+    .catch(e => { LB.error = e.message; })
+    .finally(() => { LB.loading = false; });
+}
+canvas.addEventListener('wheel', e => {
+  if (S.screen !== 'leaderboard') return;
+  e.preventDefault();
+  LB.scroll = Math.max(0, Math.min(Math.max(0, LB.rows.length - LB_VISIBLE), LB.scroll + Math.sign(e.deltaY)));
+}, { passive:false });
+
 function hostGame() { connectCentral('create'); }
 function joinGame(code) {
   if (!/^\d{6}$/.test(String(code))) { netError = 'O código tem de ter 6 números.'; return; }
@@ -475,6 +662,7 @@ function netCancel(resetScreen = true) {
   resetNetState();
   isHost = false; isMultiplayer = false; mySeat = 0; myRoomCode = '';
   netConnected = false; netStatus = ''; netError = '';
+  S.names = null; S.ranked = null; refreshAccount();
   S.p1Char = null; S.p2Char = null; S.votes = {}; S.myVote = null; S._startingGame = false;
   if (resetScreen) { S.mode = null; S.screen = 'menu'; S.menuSub = 'online'; }
 }
@@ -1358,6 +1546,24 @@ function drawLogo() {
   ctx.restore();
 }
 
+function drawAccountHeader(inside) {
+  const y = 16, h = 26;
+  const pill = (label, x, w, c1, c2, action) => {
+    const hv = !!action && inside(x, y, w, h); if (hv) uiHover = true;
+    const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, hv ? '#ffe08a' : c1); g.addColorStop(1, c2);
+    ctx.fillStyle = g; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; roundRect(x, y, w, h, 6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = 'bold 14px system-ui';
+    ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+    if (hv && mouse.click) action();
+  };
+  if (!ACCOUNT) pill('Cadastrar / Entrar', 1010, 240, '#ffc15e', '#f08a24', () => authOpen('login'));
+  else {
+    pill(ACCOUNT.games ? 'ELO ' + ACCOUNT.elo : 'SEM ELO', 1040, 100, '#3a56c8', '#25388f', null);
+    pill('Sair', 1150, 100, '#ff8a80', '#e0342f', logout);
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+}
+
 function drawMenuPanel() {
   const t = nowSec(), inside = (x, y, w, h) => mouse.x > x && mouse.x < x + w && mouse.y > y && mouse.y < y + h;
   ctx.save(); ctx.lineJoin = 'round';
@@ -1365,8 +1571,8 @@ function drawMenuPanel() {
   ctx.fillStyle = '#2b3a8c'; ctx.strokeStyle = '#9fb4ff'; ctx.lineWidth = 3; roundRect(790, 16, 72, 72, 10); ctx.fill(); ctx.stroke();
   ctx.fillStyle = '#ffdd00'; ctx.beginPath(); ctx.moveTo(840, 24); ctx.lineTo(814, 56); ctx.lineTo(828, 56); ctx.lineTo(816, 82); ctx.lineTo(850, 46); ctx.lineTo(835, 46); ctx.closePath(); ctx.fill();
   ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.font = 'bold 18px system-ui'; ctx.fillStyle = '#fff'; ctx.strokeStyle = 'rgba(10,30,90,0.8)'; ctx.lineWidth = 4;
-  ctx.strokeText('Convidado', 872, 30); ctx.fillText('Convidado', 872, 30);
-  ctx.fillStyle = 'rgba(20,40,100,0.85)'; ctx.fillRect(1150, 18, 100, 24); ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 14px system-ui'; ctx.fillText('Nível 1', 1200, 31);
+  const accLabel = ACCOUNT ? lobbyFit(ACCOUNT.name, 150) : 'Convidado'; ctx.strokeText(accLabel, 872, 30); ctx.fillText(accLabel, 872, 30);
+  drawAccountHeader(inside);
   ['📦', '🎁', '❗', '🔄', '⚙️'].forEach((ic, i) => {
     const x = 872 + i * 76, y = 48, hv = inside(x, y, 70, 42); if (hv) uiHover = true;
     const g = ctx.createLinearGradient(0, y, 0, y + 42); g.addColorStop(0, hv ? '#7cc4ff' : '#4aa8ff'); g.addColorStop(1, hv ? '#2a7be8' : '#1565d8');
@@ -1412,10 +1618,11 @@ function drawMenu() {
   const hov = (i) => mouse.x > bx && mouse.x < bx + bw && mouse.y > by + i * (bh + gap) && mouse.y < by + i * (bh + gap) + bh;
   if (S.menuSub === 'main') {
     drawMenuButton('Online Play', bx, by + 0 * (bh + gap), bw, bh, '#5ab5e8', '#7ac5f8', hov(0), () => { S.menuSub = 'online'; });
-    drawMenuButton('Ranked', bx, by + 1 * (bh + gap), bw, bh, '#5ab5e8', '#7ac5f8', hov(1), () => { alert('Em breve!'); });
-    drawMenuButton('Offline Play', bx, by + 2 * (bh + gap), bw, bh, '#9a7b5e', '#ba9b7e', hov(2), () => { S.menuSub = 'offline'; });
-    drawMenuButton('Meet the Legends', bx, by + 3 * (bh + gap), bw, bh, '#f9a03f', '#ffb05f', hov(3), () => { S.screen = 'charselect_preview'; });
-    drawMenuButton('Store', bx, by + 4 * (bh + gap), bw, bh, '#f9a03f', '#ffb05f', hov(4), () => { alert('Loja em breve!'); });
+    drawMenuButton('Ranked', bx, by + 1 * (bh + gap), bw, bh, '#5ab5e8', '#7ac5f8', hov(1), startRanked);
+    drawMenuButton('Leaderboard', bx, by + 2 * (bh + gap), bw, bh, '#f9a03f', '#ffb05f', hov(2), openLeaderboard);
+    drawMenuButton('Offline Play', bx, by + 3 * (bh + gap), bw, bh, '#9a7b5e', '#ba9b7e', hov(3), () => { S.menuSub = 'offline'; });
+    drawMenuButton('Meet the Legends', bx, by + 4 * (bh + gap), bw, bh, '#f9a03f', '#ffb05f', hov(4), () => { S.screen = 'charselect_preview'; });
+    drawMenuButton('Store', bx, by + 5 * (bh + gap), bw, bh, '#f9a03f', '#ffb05f', hov(5), () => { alert('Loja em breve!'); });
   } else if (S.menuSub === 'online') {
     drawMenuButton('Create Room', bx, by + 0 * (bh + gap), bw, bh, '#5ab5e8', '#7ac5f8', hov(0), hostGame);
     drawMenuButton('Join Room', bx, by + 1 * (bh + gap), bw, bh, '#5ab5e8', '#7ac5f8', hov(1), openModal);
@@ -1485,7 +1692,50 @@ function lobbyPlayerCard(x, y, w, h, o, t) {
   ctx.fillText(lobbyFit(o.detail, w - 118 - 14), tx, y + 104);
   ctx.restore();
 }
+function drawRankedQueue() {
+  drawMenuBackground();
+  const t = nowSec(), px = 240, py = 96, pw = 800, ph = 500;
+  ctx.save();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
+  ctx.font = '50px ' + FONT; ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.strokeText('RANKED', W / 2, 66);
+  ctx.fillStyle = '#0f3a8f'; ctx.fillText('RANKED', W / 2, 66);
+  ctx.shadowColor = 'rgba(10,30,70,0.35)'; ctx.shadowBlur = 26; ctx.shadowOffsetY = 10;
+  roundRect(px, py, pw, ph, 24); ctx.fillStyle = 'rgba(245,250,255,0.82)'; ctx.fill();
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  ctx.lineWidth = 4; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+
+  const searching = NET.queueing && !netError;
+  ctx.fillStyle = '#47608f'; ctx.font = '22px ' + FONT;
+  ctx.fillText(searching ? 'A PROCURAR ADVERSÁRIO' : 'RANKED', W / 2, 148);
+  if (searching) {
+    const s = Math.max(0, Math.floor((performance.now() - NET.queueSince) / 1000));
+    ctx.fillStyle = '#102a43'; ctx.font = '84px ' + FONT;
+    ctx.fillText(Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'), W / 2, 244);
+    ctx.fillStyle = '#4a5f86'; ctx.font = '18px system-ui';
+    ctx.fillText('Vais jogar contra um jogador aleatório. Quem entra primeiro é o Jogador 1.', W / 2, 296);
+  }
+  ctx.fillStyle = 'rgba(47,111,216,0.22)'; ctx.fillRect(px + 40, 374, pw - 80, 2);
+
+  const cw2 = 340, ch2 = 120, cy2 = 392, lx = px + 30, rx = px + pw - 30 - cw2;
+  lobbyPlayerCard(lx, cy2, cw2, ch2, { title: ACCOUNT ? ACCOUNT.name : 'Tu', tag: 'P1', color: '#ff7a2f', host: false, you: true, connected: true, waitText: '', detail: ACCOUNT && ACCOUNT.games ? 'Elo ' + ACCOUNT.elo + ' · ' + ACCOUNT.wins + 'V ' + ACCOUNT.losses + 'D' : 'Ainda sem partidas ranked' }, t);
+  lobbyPlayerCard(rx, cy2, cw2, ch2, { title: 'JOGADOR 2', tag: 'P2', color: '#2f9bff', host: false, you: false, connected: false, waitText: searching ? 'A procurar' : 'Sem adversário', detail: 'Jogador aleatório' }, t);
+  ctx.textAlign = 'center'; ctx.font = '40px ' + FONT; ctx.lineWidth = 7; ctx.strokeStyle = '#fff'; ctx.strokeText('VS', W / 2, cy2 + ch2 / 2 + 14);
+  ctx.fillStyle = '#e8452c'; ctx.fillText('VS', W / 2, cy2 + ch2 / 2 + 14);
+
+  const msg = netError || (NET.reconnecting ? 'Ligação perdida — a reconectar...' : netStatus) || '';
+  const pw2 = 560, ph2 = 40, ppx = W / 2 - pw2 / 2, ppy = 526;
+  const col = netError ? ['#ffe5e1', '#d9442f', '#b3261a'] : NET.reconnecting ? ['#fff3d6', '#e0a526', '#8a5d00'] : ['#e6f0ff', '#2f6fd8', '#1c4fb0'];
+  lobbyPill(ppx, ppy, pw2, ph2, col[0], col[1]);
+  ctx.beginPath(); ctx.arc(ppx + 24, ppy + ph2 / 2, 6, 0, 6.283); ctx.fillStyle = col[1]; ctx.fill();
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = col[2]; ctx.font = (netError ? 'bold ' : '') + '17px system-ui';
+  ctx.fillText(lobbyFit(msg, pw2 - 60), ppx + 40, ppy + ph2 / 2 + 1);
+  ctx.textBaseline = 'alphabetic';
+  const bw = 240, bh = 55, bx = W / 2 - bw / 2, by = H - 98;
+  drawMenuButton('Cancelar', bx, by, bw, bh, '#ff4444', '#ff6666', mouse.x > bx && mouse.x < bx + bw && mouse.y > by && mouse.y < by + bh, netCancel);
+  ctx.restore();
+}
 function drawWaiting() {
+  if (NET.ranked) return drawRankedQueue();
   drawMenuBackground();
   const t = nowSec();
   const px = 240, py = 96, pw = 800, ph = 500;
@@ -1599,7 +1849,7 @@ function pickChar(key, id) {
 }
 
 function goMapVote() {
-  if (!S.p1Char || !S.p2Char || S.mode === 'mp_client') return;
+  if (!S.p1Char || !S.p2Char || S.mode === 'mp_client' || NET.ranked) return;   // em ranked o servidor avança sozinho
   S.screen = 'mapvote'; S.votes = {}; S.myVote = null;
   if (isHost) sendNet({ type:'ready' });
 }
@@ -1616,8 +1866,8 @@ function drawCharSelect() {
   ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
   ctx.font = '54px ' + FONT; ctx.lineWidth = 9; ctx.strokeStyle = '#0a2a6b'; ctx.strokeText('ESCOLHA OS PERSONAGENS', W / 2, 70); ctx.fillStyle = '#fff'; ctx.fillText('ESCOLHA OS PERSONAGENS', W / 2, 70);
   const panels = [
-    { key: 'p1Char', label: 'JOGADOR 1', color: '#2a7be8', x: 50, face: 1, can: mode !== 'mp_client', mine: mode === 'mp_host' },
-    { key: 'p2Char', label: mode === '1p' ? 'CPU' : 'JOGADOR 2', color: '#e0342f', x: 670, face: -1, can: mode !== 'mp_host', mine: mode === 'mp_client' }
+    { key: 'p1Char', label: (S.names && S.names[0]) || 'JOGADOR 1', color: '#2a7be8', x: 50, face: 1, can: mode !== 'mp_client', mine: mode === 'mp_host' },
+    { key: 'p2Char', label: mode === '1p' ? 'CPU' : ((S.names && S.names[1]) || 'JOGADOR 2'), color: '#e0342f', x: 670, face: -1, can: mode !== 'mp_host', mine: mode === 'mp_client' }
   ];
   const mp = mode === 'mp_host' || mode === 'mp_client';
   for (const P of panels) {
@@ -1627,7 +1877,7 @@ function drawCharSelect() {
     ctx.lineWidth = 5; ctx.strokeStyle = P.color; roundRect(x, y, w, h, 16); ctx.stroke();
     drawPortrait(sel, x + 46, y + 35, 28);
     ctx.textAlign = 'left'; ctx.fillStyle = '#fff'; ctx.font = '34px ' + FONT; ctx.fillText(P.label, x + 90, y + 47);
-    ctx.textAlign = 'right'; ctx.font = 'bold 18px system-ui'; ctx.fillText(P.mine ? 'VOCÊ' : (mp ? 'AMIGO' : ''), x + w - 20, y + 42);
+    ctx.textAlign = 'right'; ctx.font = 'bold 18px system-ui'; ctx.fillText(P.mine ? 'VOCÊ' : (mp ? (NET.ranked ? 'ADVERSÁRIO' : 'AMIGO') : ''), x + w - 20, y + 42);
     ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(20,40,90,0.22)'; ctx.beginPath(); ctx.ellipse(cx, fy + 4, 80, 12, 0, 0, 6.283); ctx.fill();
     if (c) {
@@ -1658,9 +1908,10 @@ function drawCharSelect() {
   if (mode === 'mp_client') msg = ready ? 'Aguardando o Host iniciar...' : 'Escolha o seu personagem (Jogador 2).';
   else if (mode === 'mp_host') msg = ready ? 'Tudo pronto!' : (S.p1Char ? 'Aguardando o Jogador 2 escolher...' : 'Escolha o seu personagem (Jogador 1).');
   else msg = ready ? 'Tudo pronto!' : 'Cada jogador escolhe o seu personagem (podem repetir).';
+  if (NET.ranked) { const mine = mode === 'mp_host' ? S.p1Char : S.p2Char; msg = ready ? 'A começar a partida...' : mine ? 'Aguardando o adversário...' : 'Escolha o seu personagem (45 s).'; }
   ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#0a2a6b'; ctx.font = 'bold 20px system-ui'; ctx.fillText(msg, W / 2, 664);
   drawMenuButton('Back', 40, 632, 240, 60, '#ff4444', '#ff6666', inside(40, 632, 240, 60), charSelectBack);
-  if (ready && mode !== 'mp_client') drawMenuButton('Continuar', 880, 632, 340, 60, '#f9a03f', '#ffb05f', inside(880, 632, 340, 60), goMapVote);
+  if (ready && mode !== 'mp_client' && !NET.ranked) drawMenuButton('Continuar', 880, 632, 340, 60, '#f9a03f', '#ffb05f', inside(880, 632, 340, 60), goMapVote);
   ctx.restore();
 }
 
@@ -1712,15 +1963,26 @@ function drawMapVote() {
     ctx.fillText('Votos recebidos: ' + totalVotes + '/2', W/2, 620);
     if (totalVotes >= 2) { ctx.fillStyle = '#ffaa00'; ctx.font = 'bold 22px system-ui'; ctx.fillText('Iniciando partida...', W/2, 660); }
   } else {
-    ctx.fillText(S.myVote ? 'Voto registrado. Aguardando o Host...' : 'Clique em um mapa para votar.', W/2, 620);
+    ctx.fillText(S.myVote ? 'Voto registrado. Aguardando o outro jogador...' : 'Clique em um mapa para votar.', W/2, 620);
   }
   ctx.restore();
 }
 
 function drawGameOver() {
   ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fillRect(0, 0, W, H); ctx.save(); ctx.textAlign = 'center'; ctx.font = 'bold 72px system-ui';
-  const w = S.winner; ctx.fillStyle = w.char.color; ctx.strokeStyle = '#000'; ctx.lineWidth = 6; ctx.strokeText(w.char.name + ' VENCEU!', W/2, H/2 - 40); ctx.fillText(w.char.name + ' VENCEU!', W/2, H/2 - 40);
-  ctx.font = '20px system-ui'; ctx.fillStyle = '#aaa'; ctx.fillText('Clique para voltar ao menu', W/2, H/2 + 40); ctx.restore();
+  const w = S.winner, R = S.ranked, who = (R && S.names && S.names[w.idx]) || w.char.name;
+  ctx.fillStyle = w.char.color; ctx.strokeStyle = '#000'; ctx.lineWidth = 6; ctx.strokeText(who + ' VENCEU!', W/2, H/2 - 60); ctx.fillText(who + ' VENCEU!', W/2, H/2 - 60);
+  let y = H/2 + 30;
+  if (R) {
+    ctx.font = 'bold 46px system-ui'; ctx.lineWidth = 5; ctx.fillStyle = R.won ? '#7cfc7c' : '#ff6a5a';
+    const head = R.won ? 'VITÓRIA' : 'DERROTA';
+    ctx.strokeText(head, W/2, H/2 + 10); ctx.fillText(head, W/2, H/2 + 10);
+    const delta = R.first ? 'Elo inicial' : (R.delta >= 0 ? '+' : '') + R.delta;
+    ctx.font = 'bold 32px system-ui'; ctx.fillStyle = '#fff'; ctx.fillText('ELO ' + R.elo + '  (' + delta + ')', W/2, H/2 + 60);
+    if (R.forfeit) { ctx.font = '18px system-ui'; ctx.fillStyle = '#ffd37a'; ctx.fillText('O adversário abandonou a partida.', W/2, H/2 + 92); }
+    y = H/2 + 140;
+  }
+  ctx.font = '20px system-ui'; ctx.fillStyle = '#aaa'; ctx.fillText('Clique para voltar ao menu', W/2, y); ctx.restore();
 }
 
 // ============================================================
@@ -1838,6 +2100,65 @@ function handleMenuClick() {
   }
 }
 
+// Nome pequeno por cima do personagem (só em partidas online).
+function drawNameTag(p) {
+  if (p.eliminated || (p.respawn && p.respawn > 0)) return;
+  const name = S.names[p.idx] || ('Jogador ' + (p.idx + 1));
+  ctx.save();
+  ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const w = ctx.measureText(name).width + 14, x = p.x, y = Math.min(WH - 12, Math.max(16, p.y - (p.h || 68) - 28));
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; roundRect(x - w / 2, y - 9, w, 18, 9); ctx.fill();
+  ctx.fillStyle = p.idx === 0 ? '#9fd8ff' : '#ffb3aa'; ctx.fillText(name, x, y + 1);
+  ctx.restore();
+}
+
+function drawLeaderboard() {
+  drawMenuBackground();
+  const inside = (x, y, w, h) => mouse.x > x && mouse.x < x + w && mouse.y > y && mouse.y < y + h;
+  ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
+  ctx.font = '54px ' + FONT; ctx.lineWidth = 9; ctx.strokeStyle = '#0a2a6b'; ctx.strokeText('LEADERBOARD', W / 2, 70);
+  ctx.fillStyle = '#fff'; ctx.fillText('LEADERBOARD', W / 2, 70);
+  const px = 190, py = 96, pw = 900, ph = 500, rowH = 38, top = py + 56;
+  ctx.shadowColor = 'rgba(10,30,70,0.35)'; ctx.shadowBlur = 24; ctx.shadowOffsetY = 8;
+  roundRect(px, py, pw, ph, 20); ctx.fillStyle = 'rgba(245,250,255,0.92)'; ctx.fill();
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  ctx.save(); roundRect(px, py, pw, ph, 20); ctx.clip();
+  ctx.fillStyle = '#2a7be8'; ctx.fillRect(px, py, pw, 46); ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fillRect(px, py, pw, 18);
+  ctx.restore();
+  ctx.lineWidth = 4; ctx.strokeStyle = '#fff'; roundRect(px, py, pw, ph, 20); ctx.stroke();
+  const cx = { rank: px + 56, name: px + 118, elo: px + 520, wins: px + 668, losses: px + 806 };
+  ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff'; ctx.font = '22px ' + FONT;
+  ctx.textAlign = 'center'; ctx.fillText('#', cx.rank, py + 24);
+  ctx.textAlign = 'left'; ctx.fillText('JOGADOR', cx.name, py + 24);
+  ctx.textAlign = 'center'; ctx.fillText('ELO', cx.elo, py + 24); ctx.fillText('VITÓRIAS', cx.wins, py + 24); ctx.fillText('DERROTAS', cx.losses, py + 24);
+
+  const rows = LB.rows;
+  if (LB.loading || LB.error || !rows.length) {
+    ctx.textAlign = 'center'; ctx.font = '26px ' + FONT; ctx.fillStyle = LB.error ? '#b3261a' : '#47608f';
+    ctx.fillText(LB.loading ? 'A carregar...' : LB.error ? LB.error : 'Ainda ninguém jogou Ranked.', W / 2, py + ph / 2 + 10);
+  } else {
+    const medal = ['#e0a800', '#8f9bb0', '#b4743a'];
+    for (let i = 0; i < LB_VISIBLE; i++) {
+      const r = rows[LB.scroll + i]; if (!r) break;
+      const y = top + i * (rowH + 2), me = ACCOUNT && r.name.toLowerCase() === ACCOUNT.name.toLowerCase();
+      ctx.fillStyle = me ? 'rgba(255,214,60,0.45)' : i % 2 ? 'rgba(47,111,216,0.07)' : 'rgba(47,111,216,0.14)';
+      roundRect(px + 18, y, pw - 36, rowH, 10); ctx.fill();
+      ctx.textAlign = 'center'; ctx.font = '24px ' + FONT; ctx.fillStyle = r.rank <= 3 ? medal[r.rank - 1] : '#47608f'; ctx.fillText(String(r.rank), cx.rank, y + rowH / 2 + 1);
+      ctx.textAlign = 'left'; ctx.font = 'bold 20px system-ui'; ctx.fillStyle = '#102a43'; ctx.fillText(lobbyFit(r.name, 330), cx.name, y + rowH / 2 + 1);
+      ctx.textAlign = 'center'; ctx.font = '26px ' + FONT; ctx.fillStyle = '#0f3a8f'; ctx.fillText(String(r.elo), cx.elo, y + rowH / 2 + 1);
+      ctx.font = 'bold 20px system-ui'; ctx.fillStyle = '#157a4a'; ctx.fillText(String(r.wins), cx.wins, y + rowH / 2 + 1);
+      ctx.fillStyle = '#b3261a'; ctx.fillText(String(r.losses), cx.losses, y + rowH / 2 + 1);
+    }
+    if (rows.length > LB_VISIBLE) {
+      ctx.textAlign = 'center'; ctx.font = '14px system-ui'; ctx.fillStyle = '#6b7fa3';
+      ctx.fillText('Role o rato para ver mais · ' + (LB.scroll + 1) + '–' + Math.min(rows.length, LB.scroll + LB_VISIBLE) + ' de ' + rows.length, W / 2, py + ph - 14);
+    }
+  }
+  ctx.textBaseline = 'alphabetic';
+  drawMenuButton('Back', 40, 632, 240, 60, '#ff4444', '#ff6666', inside(40, 632, 240, 60), () => { S.screen = 'menu'; S.menuSub = 'main'; });
+  ctx.restore();
+}
+
 function render() {
   ctx.save();
   if (S.screen === 'playing' && S.shake > 0.5) {
@@ -1846,6 +2167,7 @@ function render() {
 
   if (S.screen === 'menu') { drawMenu(); ctx.restore(); return; }
   if (S.screen === 'waiting') { drawWaiting(); ctx.restore(); return; }
+  if (S.screen === 'leaderboard') { drawLeaderboard(); ctx.restore(); return; }
   if (S.screen === 'charselect') {
     drawCharSelect(); ctx.restore();
     if (keys['enter']) { keys['enter'] = false; goMapVote(); }
@@ -1860,6 +2182,7 @@ function render() {
 
   ctx.save(); ctx.scale(Z, Z); drawBackground(S.map, S.frame); drawPlatforms(S.map, S.frame); drawHazards(S.map, S.frame);
   const sorted = [...S.players].sort((a, b) => a.y - b.y); for (const p of sorted) drawCharacter(p);
+  if (isMultiplayer && S.names) for (const p of sorted) drawNameTag(p);
   drawProjectiles(); drawParticles(); ctx.restore(); drawHUD();
 
   if (S.screen === 'gameover') drawGameOver();
