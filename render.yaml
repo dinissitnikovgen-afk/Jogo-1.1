@@ -2,6 +2,11 @@ services:
   - type: web
     name: brawl-central
     runtime: node
-    buildCommand: npm install
+    buildCommand: npm install --omit=dev
     startCommand: npm start
-    healthCheckPath: /
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SNAP_HZ        # 20, 30 ou 60 snapshots por segundo
+        value: "30"

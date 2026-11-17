@@ -11,6 +11,29 @@ Esta versão substitui PeerJS/WebRTC e as credenciais TURN do Metered por um ser
 - As salas usam códigos numéricos de 6 dígitos.
 - O HTML já não contém credenciais Metered, PeerJS ou TURN.
 
+
+## Otimizações de rede e estabilidade (v2)
+
+**Servidor**
+- Loop de simulação com acumulador: 60 ticks/s exatos (o `setInterval(16.67)` anterior arredondava para 16/17 ms).
+- O HTML é lido e compilado uma só vez; cada sala só cria um contexto novo, e apenas quando a partida começa.
+- Snapshots compactos: números arredondados e só as partículas novas (antes eram reenviadas 50 partículas a cada snapshot). Cada snapshot é serializado uma vez e enviado aos dois jogadores.
+- Snapshots em ligações lentas são descartados em vez de acumulados (`bufferedAmount`).
+- Toques curtos (premir e largar entre dois ticks) já não se perdem.
+- Reconexão: se um jogador perder a ligação, a simulação pausa até 20 s e ele volta à mesma sala automaticamente.
+- Heartbeat (ping a cada 15 s) para o proxy do Render não fechar ligações inativas e para detetar ligações mortas.
+- Anti-flood, limite de salas (`MAX_ROOMS`), `try/catch` por sala (um erro não derruba o servidor) e encerramento limpo no `SIGTERM`.
+- HTTP com gzip, ETag e `/healthz`.
+- `SNAP_HZ` (20/30/60) configurável por variável de ambiente.
+
+**Cliente**
+- Interpolação com buffer de snapshots e atraso adaptativo ao jitter, independente do FPS do ecrã.
+- Os inputs só são enviados quando mudam (antes 60 mensagens/s), com resync a cada segundo.
+- Ao perder o foco do separador, as teclas são libertadas (evita personagem a andar sozinha).
+- Reconexão automática com mensagem no ecrã e indicador de ping.
+
+> Nota: o ficheiro `public/index.html` continua a ser a fonte do motor de jogo, por isso o servidor valida no arranque que os pontos de integração existem.
+
 ## Executar localmente
 
 1. Instala Node.js 20 ou superior.

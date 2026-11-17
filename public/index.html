@@ -125,7 +125,6 @@ const S = {
 };
 
 let socket = null, isHost = false, isMultiplayer = false, myRoomCode = "", mySeat = 0;
-let lastInputSend = 0;
 
 const keys = {};
 window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase())) e.preventDefault(); });
@@ -157,6 +156,20 @@ function submitModalCode() {
   if (/^\d{6}$/.test(code)) { closeModal(); joinGame(code); }
   else netError = 'O código tem de ter 6 números.';
 }
+const NET = {
+  token:'', code:'', retry:0, retryTimer:null, reconnecting:false, peerLost:false,
+  lastMsg:0, ping:0, snapEvery:2,
+  buf:[], renderFrame:0, hasFrame:false, jitter:0, lastArrival:0, lastRel:-1, pAcc:0,
+  lastSent:'', lastSentAt:0
+};
+function resetNetState() {
+  clearTimeout(NET.retryTimer);
+  Object.assign(NET, { token:'', code:'', retry:0, retryTimer:null, reconnecting:false, peerLost:false, ping:0 });
+  resetSnapshots();
+}
+function resetSnapshots() {
+  Object.assign(NET, { buf:[], renderFrame:0, hasFrame:false, jitter:0, lastArrival:0, lastRel:-1, pAcc:0, lastSent:'', lastSentAt:0 });
+}
 function connectCentral(role, code) {
   netCancel(false);
   isMultiplayer = true;
@@ -167,88 +180,226 @@ function connectCentral(role, code) {
   myRoomCode = code || '';
   netConnected = false; netError = '';
   netStatus = 'A ligar ao servidor central...';
+  openSocket(() => role === 'create' ? { type:'create' } : { type:'join', code });
+}
+function openSocket(firstMsg) {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  socket = new WebSocket(protocol + '//' + location.host);
-  socket.addEventListener('open', () => {
-    netStatus = 'Ligado ao servidor. A preparar sala...';
-    sendNet(role === 'create' ? { type:'create' } : { type:'join', code });
+  const ws = new WebSocket(protocol + '//' + location.host);
+  socket = ws;
+  ws.addEventListener('open', () => {
+    if (socket !== ws) return;
+    NET.lastMsg = performance.now();
+    netStatus = NET.reconnecting ? 'A restabelecer a sala...' : 'Ligado ao servidor. A preparar sala...';
+    sendNet(firstMsg());
   });
-  socket.addEventListener('message', event => {
+  ws.addEventListener('message', event => {
+    if (socket !== ws) return;
+    NET.lastMsg = performance.now();
     let data;
     try { data = JSON.parse(event.data); } catch (_) { return; }
-    if (data.type === 'roomCreated') {
-      myRoomCode = data.code; mySeat = 0; isHost = true;
-      netConnected = false; netStatus = 'Sala criada. À espera do Jogador 2...';
-    } else if (data.type === 'joined') {
-      myRoomCode = data.code; mySeat = 1; isHost = false;
-      netConnected = true; netStatus = 'Ligado à sala. À espera do outro jogador...';
-    } else if (data.type === 'playerJoined') {
-      netConnected = true; netStatus = 'Os dois jogadores estão ligados.';
-      S.screen = 'charselect';
-    } else if (data.type === 'screen') {
+    handleNet(data);
+  });
+  ws.addEventListener('close', () => { if (socket === ws) onSocketLost(); });
+  ws.addEventListener('error', () => {});
+}
+function fatalNet(message) {
+  clearTimeout(NET.retryTimer);
+  NET.reconnecting = false; NET.peerLost = false;
+  netConnected = false; netError = message;
+  const old = socket; socket = null;
+  if (old) { try { old.close(); } catch (_) {} }
+  S.screen = 'waiting';   // mostra o erro e o botão Voltar
+}
+function onSocketLost() {
+  if (!isMultiplayer) return;
+  socket = null; netConnected = false;
+  if (S.screen === 'gameover') return;
+  if (NET.token && NET.code && NET.retry < 10) {
+    NET.reconnecting = true; netStatus = 'Ligação perdida. A reconectar...';
+    const wait = Math.min(3000, 400 * ++NET.retry);
+    clearTimeout(NET.retryTimer);
+    NET.retryTimer = setTimeout(() => {
+      if (!isMultiplayer) return;
+      openSocket(() => ({ type:'resume', code:NET.code, seat:mySeat, token:NET.token }));
+    }, wait);
+  } else {
+    fatalNet(NET.token ? 'Ligação ao servidor perdida. Volta a entrar na sala.' : 'Não foi possível ligar ao servidor. Verifica a ligação e tenta novamente.');
+  }
+}
+function handleNet(data) {
+  switch (data.type) {
+    case 'roomCreated':
+      myRoomCode = data.code; mySeat = 0; isHost = true; NET.token = data.token; NET.code = data.code;
+      netConnected = false; netStatus = 'Sala criada. À espera do Jogador 2...'; break;
+    case 'joined':
+      myRoomCode = data.code; mySeat = 1; isHost = false; NET.token = data.token; NET.code = data.code;
+      netConnected = true; netStatus = 'Ligado à sala. À espera do outro jogador...'; break;
+    case 'playerJoined':
+      netConnected = true; netStatus = 'Os dois jogadores estão ligados.'; S.screen = 'charselect'; break;
+    case 'screen':
       S.screen = data.screen;
       if (data.screen === 'mapvote') { S.votes = {}; S.myVote = null; }
-    } else if (data.type === 'picks') {
-      S.p1Char = data.p1; S.p2Char = data.p2;
-    } else if (data.type === 'voteUpdate') {
-      S.votes = data.votes || {};
-    } else if (data.type === 'start') {
-      S.p1Char = data.p1; S.p2Char = data.p2;
-      startGame(data.mapId, true);
-      netStatus = 'Partida iniciada no servidor central.';
-    } else if (data.type === 'state') {
-      applyServerState(data);
-    } else if (data.type === 'gameover') {
+      break;
+    case 'picks': S.p1Char = data.p1; S.p2Char = data.p2; break;
+    case 'voteUpdate': S.votes = data.votes || {}; break;
+    case 'start':
+      S.p1Char = data.p1; S.p2Char = data.p2; NET.snapEvery = data.snapEvery || 2;
+      resetSnapshots(); startGame(data.mapId, true);
+      netStatus = 'Partida iniciada no servidor central.'; break;
+    case 'state': pushSnapshot(data); break;
+    case 'gameover':
+      sampleSnapshots(true);   // posições finais exatas
       S.winner = S.players.find(p => p.idx === data.winnerIdx) || S.players[0];
-      S.screen = 'gameover'; S.shake = 0; S.hitlag = 0;
-    } else if (data.type === 'error') {
-      netError = data.message || 'Erro de ligação.';
-    } else if (data.type === 'left') {
-      netError = 'O outro jogador saiu da partida.';
-      netConnected = false;
+      S.screen = 'gameover'; S.shake = 0; S.hitlag = 0; break;
+    case 'pong': {
+      const rtt = performance.now() - data.t;
+      NET.ping = NET.ping ? NET.ping * 0.7 + rtt * 0.3 : rtt; break;
     }
-  });
-  socket.addEventListener('close', () => {
-    if (isMultiplayer) {
-      netConnected = false;
-      if (!netError) netError = 'Ligação ao servidor perdida. Volta a entrar na sala.';
-    }
-  });
-  socket.addEventListener('error', () => {
-    netError = 'Não foi possível ligar ao servidor. Verifica a ligação e tenta novamente.';
-  });
+    case 'peerLost': NET.peerLost = true; break;
+    case 'peerBack': NET.peerLost = false; break;
+    case 'resumed':
+      NET.reconnecting = false; NET.peerLost = false; NET.retry = 0; netError = '';
+      mySeat = data.seat; isHost = data.seat === 0; S.mode = isHost ? 'mp_host' : 'mp_client';
+      myRoomCode = data.code; netConnected = true; netStatus = 'Ligação restabelecida.';
+      S.p1Char = data.p1; S.p2Char = data.p2; NET.snapEvery = data.snapEvery || 2;
+      if (data.screen === 'playing') { resetSnapshots(); startGame(data.mapId, true); }
+      else if (data.screen === 'gameover') { netCancel(); }
+      else { S.screen = data.screen; if (data.screen === 'mapvote') S.votes = data.votes || {}; }
+      break;
+    case 'resumeFailed': fatalNet('A sala já não existe. Cria ou entra numa nova.'); break;
+    case 'error':
+      if (S.screen === 'waiting' || S.screen === 'charselect') netError = data.message || 'Erro de ligação.';
+      else fatalNet(data.message || 'Erro de ligação.');
+      break;
+    case 'left':
+      if (S.screen !== 'gameover') fatalNet('O outro jogador saiu da partida.');
+      break;
+  }
 }
-function applyServerState(data) {
-  if (data.mapId && MAPS[data.mapId] && S.map !== MAPS[data.mapId]) S.map = MAPS[data.mapId];
-  const previous = new Map(S.players.map(p => [p.idx, p]));
-  S.players = (data.players || []).map(netP => {
-    const old = previous.get(netP.idx);
-    const p = old || {};
-    const renderX = old ? old.x : netP.x;
-    const renderY = old ? old.y : netP.y;
-    Object.assign(p, netP);
-    p.x = renderX; p.y = renderY;
-    p.targetX = netP.x; p.targetY = netP.y;
+// ---- Buffer de snapshots + interpolação (suave a qualquer taxa de FPS) ----
+function pushSnapshot(d) {
+  const t = performance.now(), prev = NET.buf[NET.buf.length - 1];
+  if (prev && d.frame <= prev.frame) return;
+  if (prev) {
+    const dev = Math.abs((t - NET.lastArrival) - (d.frame - prev.frame) * 16.667) / 16.667;
+    NET.jitter += (dev - NET.jitter) * 0.1;
+  }
+  NET.lastArrival = t;
+  NET.buf.push(d);
+  if (NET.buf.length > 16) NET.buf.shift();
+}
+// atraso de renderização adaptativo: mais jitter => mais buffer (em frames de 60 Hz)
+function netDelay() { return Math.min(9, Math.max(NET.snapEvery + 1, NET.snapEvery + 1.5 + NET.jitter * 2)); }
+const lerp1 = (a, b, f) => a + (b - a) * f;
+function sampleSnapshots(force, dt = 1) {
+  const buf = NET.buf;
+  if (!buf.length || S.screen !== 'playing' && !force) return;
+  const newest = buf[buf.length - 1];
+  if (force) NET.renderFrame = newest.frame;
+  else {
+    if (!NET.hasFrame) { NET.renderFrame = newest.frame - netDelay(); NET.hasFrame = true; }
+    const err = (newest.frame - netDelay()) - NET.renderFrame;
+    NET.renderFrame += dt;
+    if (Math.abs(err) > 12) NET.renderFrame += err; else NET.renderFrame += err * 0.04 * dt;
+    if (NET.renderFrame > newest.frame) NET.renderFrame = newest.frame;
+  }
+  const rf = NET.renderFrame;
+  let a = buf[0], b = buf[0];
+  if (rf >= newest.frame) a = b = newest;
+  else if (rf > buf[0].frame) for (let k = buf.length - 2; k >= 0; k--) if (buf[k].frame <= rf) { a = buf[k]; b = buf[k + 1]; break; }
+  const f = b.frame > a.frame ? (rf - a.frame) / (b.frame - a.frame) : 1;
+  S.frame = rf;
+
+  // jogadores
+  const prev = new Map(S.players.map(p => [p.idx, p]));
+  S.players = b.players.map((nb, i) => {
+    const na = a.players[i] || nb, p = prev.get(nb.idx) || {}, src = f >= 0.5 ? nb : na;
+    Object.assign(p, src);
+    const teleport = Math.abs(nb.x - na.x) > 250 || Math.abs(nb.y - na.y) > 250 || (na.respawn > 0) !== (nb.respawn > 0);
+    if (!teleport) { p.x = lerp1(na.x, nb.x, f); p.y = lerp1(na.y, nb.y, f); p.vx = lerp1(na.vx, nb.vx, f); p.vy = lerp1(na.vy, nb.vy, f); }
+    if (na.animState === nb.animState && nb.animTime >= na.animTime) p.animTime = lerp1(na.animTime, nb.animTime, f);
     p.char = CHARACTERS[p.charId];
-    if (p.attack) p.attack.atk = p.char && p.char.attacks[p.attack.type];
+    p.attack = src.attack ? { ...src.attack } : null;
+    if (p.attack) {
+      if (na.attack && nb.attack && na.attack.type === nb.attack.type) p.attack.timer = lerp1(na.attack.timer, nb.attack.timer, f);
+      p.attack.atk = p.char && p.char.attacks[p.attack.type];
+    }
     return p;
   });
-  S.projectiles = data.projectiles || [];
-  S.particles = data.particles || [];
-  S.frame = data.frame || S.frame;
-  S.shake = S.screen === 'playing' ? (data.shake || 0) : 0;
+  // projéteis (casados por id)
+  const am = new Map(a.projectiles.map(p => [p.id, p]));
+  S.projectiles = [];
+  for (const pb of b.projectiles) {
+    const pa = am.get(pb.id);
+    if (!pa && f < 1) continue;               // ainda não "nasceu" no tempo de render
+    S.projectiles.push(pa ? { ...pb, x: lerp1(pa.x, pb.x, f), y: lerp1(pa.y, pb.y, f) } : { ...pb });
+  }
+  // partículas novas e shake: libertados quando o tempo de render alcança o snapshot
+  for (const s of buf) {
+    if (s.frame <= NET.lastRel || s.frame > rf) continue;
+    NET.lastRel = s.frame;
+    S.shake = s.shake;
+    for (const q of s.particles) {
+      const o = { x:q[0], y:q[1], vx:q[2], vy:q[3], life:q[4], max:q[5], color:q[6], size:q[7] };
+      if (q.length > 8) { o.text = q[8]; o.dmgNum = true; }
+      S.particles.push(o);
+    }
+  }
+  if (S.particles.length > 300) S.particles.splice(0, S.particles.length - 300);
 }
-function hostGame() { connectCentral('create'); }
-function joinGame(code) {
-  if (!/^\d{6}$/.test(String(code))) { netError = 'O código tem de ter 6 números.'; return; }
-  connectCentral('join', String(code));
+function stepClientParticles(dt) {
+  NET.pAcc = Math.min(NET.pAcc + dt, 4);
+  while (NET.pAcc >= 1) { updateParticles(1); NET.pAcc -= 1; }
+}
+// Envia só quando o input muda (antes: 60 mensagens/s mesmo parado) + resync a cada segundo.
+function sendInputIfChanged(now) {
+  const raw = readInput(0), myInputs = {};
+  let key = '';
+  for (const k in EMPTY_INPUT) { myInputs[k] = !!raw[k]; key += myInputs[k] ? '1' : '0'; }
+  if (key !== NET.lastSent || now - NET.lastSentAt > 1000) {
+    NET.lastSent = key; NET.lastSentAt = now;
+    sendNet({ type:'input', inputs:myInputs });
+  }
+}
+function releaseAllInputs() {
+  for (const k in keys) keys[k] = false;
+  if (isMultiplayer && S.screen === 'playing') { sendNet({ type:'input', inputs:EMPTY_INPUT }); NET.lastSent = '00000000'; NET.lastSentAt = performance.now(); }
+}
+window.addEventListener('blur', releaseAllInputs);
+document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAllInputs(); });
+// ping/medição de latência + watchdog de ligação silenciosa
+setInterval(() => {
+  if (!isMultiplayer || !socket) return;
+  sendNet({ type:'ping', t:performance.now() });
+  if (performance.now() - NET.lastMsg > 8000) {     // ligação "morta": força reconexão
+    const dead = socket; socket = null;
+    try { dead.close(); } catch (_) {}
+    onSocketLost();
+  }
+}, 2000);
+function drawNetOverlay() {
+  if (!isMultiplayer) return;
+  const msg = NET.reconnecting ? 'Ligação perdida — a reconectar...' : NET.peerLost ? 'O adversário perdeu a ligação — a aguardar...' : '';
+  ctx.save();
+  if (S.screen === 'playing' && NET.ping) {
+    const ms = Math.round(NET.ping);
+    ctx.font = 'bold 14px monospace'; ctx.textAlign = 'right'; ctx.lineWidth = 3; ctx.strokeStyle = '#000';
+    ctx.fillStyle = ms < 60 ? '#7cfc7c' : ms < 120 ? '#ffd24a' : '#ff6a5a';
+    ctx.strokeText(ms + ' ms', W - 12, H - 12); ctx.fillText(ms + ' ms', W - 12, H - 12);
+  }
+  if (msg && S.screen !== 'waiting') {
+    ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, H/2 - 45, W, 90);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 30px system-ui'; ctx.textAlign = 'center'; ctx.fillText(msg, W/2, H/2 + 11);
+  }
+  ctx.restore();
 }
 function netCancel(resetScreen = true) {
   const old = socket; socket = null;
-  if (old && old.readyState === WebSocket.OPEN) {
-    try { old.send(JSON.stringify({ type:'leave' })); } catch (_) {}
+  if (old) {
+    try { if (old.readyState === WebSocket.OPEN) old.send(JSON.stringify({ type:'leave' })); } catch (_) {}
     try { old.close(); } catch (_) {}
   }
+  resetNetState();
   isHost = false; isMultiplayer = false; mySeat = 0; myRoomCode = '';
   netConnected = false; netStatus = ''; netError = '';
   S.p1Char = null; S.p2Char = null; S.votes = {}; S.myVote = null; S._startingGame = false;
@@ -1393,24 +1544,15 @@ function loop(now) {
 
   if (S.screen === 'playing') {
     if (isMultiplayer) {
-      const raw = readInput(0), myInputs = {};
-      for (const k in raw) myInputs[k] = !!raw[k];
       // Os dois jogadores enviam apenas comandos; a simulação corre no servidor.
-      if (now - lastInputSend >= 16) {
-        lastInputSend = now;
-        sendNet({ type:'input', inputs:myInputs });
-      }
-      // Interpolação visual igual para os dois clientes.
-      for (const p of S.players) {
-        if (Number.isFinite(p.targetX)) p.x += (p.targetX - p.x) * 0.42;
-        if (Number.isFinite(p.targetY)) p.y += (p.targetY - p.y) * 0.42;
-      }
-      S.frame += dt;
+      sendInputIfChanged(now);
+      sampleSnapshots(false, dt);   // interpolação entre snapshots (independente do FPS)
+      stepClientParticles(dt);
     } else {
       update(dt); S.frame += dt;
     }
   }
-  render(); canvas.style.cursor = uiHover ? 'pointer' : 'default'; uiHover = false; mouse.click = false; requestAnimationFrame(loop);
+  render(); drawNetOverlay(); canvas.style.cursor = uiHover ? 'pointer' : 'default'; uiHover = false; mouse.click = false; requestAnimationFrame(loop);
 }
 
 function update(dt) {
