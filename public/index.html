@@ -96,6 +96,46 @@
   }
   .auth-field:focus { border-color: #ffb347; box-shadow: 0 0 0 4px rgba(255,179,71,0.35); }
   #authError { min-height: 22px; margin: 2px 0 6px; color: #ffd2cc; font: bold 14px system-ui, sans-serif; }
+
+  /* ---- Janela Definições ---- */
+  #setOverlay {
+    position: absolute; inset: 0; display: none; align-items: center; justify-content: center; z-index: 120;
+    background: rgba(8,20,50,0.55); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+    opacity: 0; transition: opacity .18s ease;
+  }
+  #setOverlay.open { opacity: 1; }
+  #setBox {
+    position: relative; width: min(94vw, 580px); max-height: 94vh; overflow-y: auto; padding: 24px 26px 16px; text-align: center;
+    background: linear-gradient(180deg, #2a6be0 0%, #17418f 100%); border: 4px solid #fff; border-radius: 24px;
+    box-shadow: 0 18px 50px rgba(0,10,60,0.6), inset 0 2px 0 rgba(255,255,255,0.35);
+    transform: translateY(16px) scale(.95); transition: transform .24s cubic-bezier(.2,1.3,.4,1);
+    font-family: 'Lilita One', 'Arial Black', system-ui, sans-serif;
+  }
+  #setOverlay.open #setBox { transform: none; }
+  #setClose {
+    position: absolute; top: 12px; right: 14px; width: 34px; height: 34px; border-radius: 50%; cursor: pointer;
+    background: linear-gradient(180deg, #4aa8ff, #1565d8); color: #fff; font: bold 16px system-ui, sans-serif; line-height: 1;
+    border: 3px solid #fff; box-shadow: 0 3px 0 #0b3d91; display: flex; align-items: center; justify-content: center;
+  }
+  #setClose:hover { filter: brightness(1.15); }
+  .set-row { display: flex; align-items: center; gap: 12px; margin: 14px 0; color: #fff; }
+  .set-row label { flex: 0 0 104px; text-align: left; font-size: 21px; text-shadow: 0 2px 0 rgba(0,20,80,0.5); }
+  .set-row input[type=range] { flex: 1; min-width: 0; height: 30px; accent-color: #ffb347; cursor: pointer; }
+  .set-val { flex: 0 0 52px; text-align: right; font: bold 17px system-ui, sans-serif; color: #ffd37a; }
+  .keys-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 7px 10px; align-items: center; margin: 6px 0 4px; }
+  .keys-head { color: #ffd37a; font-size: 19px; text-shadow: 0 2px 0 rgba(0,20,80,0.5); }
+  .keys-act { text-align: left; color: #fff; font: 600 16px system-ui, sans-serif; }
+  .key-btn {
+    min-height: 38px; padding: 6px; font: bold 15px system-ui, sans-serif; color: #102a43; cursor: pointer;
+    background: linear-gradient(180deg, #fff, #dbe8ff); border: 3px solid #7fa6e8; border-radius: 10px; box-shadow: 0 3px 0 #8fb0ea;
+  }
+  .key-btn:hover { border-color: #ffb347; }
+  .key-btn.listening { color: #fff; background: #f08a24; border-color: #fff; box-shadow: 0 3px 0 #b8631a; animation: keyPulse .8s ease-in-out infinite; }
+  @keyframes keyPulse { 50% { filter: brightness(1.2); } }
+  #setHint { min-height: 20px; margin-top: 10px; font: bold 13.5px system-ui, sans-serif; color: #cfe0ff; }
+  #setHint.warn { color: #ffd2cc; }
+  .set-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
+  .set-actions .btn-go { flex: 1; }
 </style>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lilita+One&display=swap">
 </head>
@@ -140,6 +180,28 @@
   </div>
 </div>
 
+<div id="setOverlay">
+  <div id="setBox" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+    <button type="button" id="setClose" aria-label="Fechar">✕</button>
+    <h2 class="auth-title" id="setTitle">Definições</h2>
+    <div class="auth-tabs">
+      <button type="button" class="auth-tab on" id="setTabSound">Som</button>
+      <button type="button" class="auth-tab" id="setTabKeys">Controlos</button>
+    </div>
+    <div id="setPaneSound">
+      <div class="set-row"><label for="setVolMaster">Geral</label><input type="range" id="setVolMaster" min="0" max="100" step="1"><span class="set-val" id="setValMaster"></span></div>
+      <div class="set-row"><label for="setVolMusic">Música</label><input type="range" id="setVolMusic" min="0" max="100" step="1"><span class="set-val" id="setValMusic"></span></div>
+      <div class="set-row"><label for="setVolSfx">Efeitos</label><input type="range" id="setVolSfx" min="0" max="100" step="1"><span class="set-val" id="setValSfx"></span></div>
+    </div>
+    <div id="setPaneKeys" style="display:none"><div class="keys-grid" id="setKeysGrid"></div></div>
+    <div id="setHint" aria-live="polite"></div>
+    <div class="set-actions">
+      <button type="button" class="btn-cancel" id="setReset">Repor predefinições</button>
+      <button type="button" class="btn-go" id="setDone">Concluído</button>
+    </div>
+  </div>
+</div>
+
 <canvas id="game" width="1280" height="720"></canvas>
 
 <script>
@@ -152,7 +214,8 @@ ctx.imageSmoothingEnabled = false;
 
 const GRAVITY = 0.7, MAX_FALL = 18, GROUND_FRICTION = 0.82, AIR_FRICTION = 0.96;
 // Mundo maior que a tela (zoom-out leve) + zonas de morte nas bordas
-const WW = 1440, WH = 810, Z = W / WW;
+const WW = 1600, WH = 900, Z = W / WW;     // mundo ~11% maior (antes 1440x810): mais espaço, menos apertado
+const MAP_K = WW / 1440;                    // fator aplicado à geometria dos mapas (desenhada originalmente em 1440x810)
 const BLAST = { l: -160, r: WW + 160, t: -280, b: WH + 140 };
 const hash = n => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
 
@@ -187,21 +250,26 @@ const MAPS = {
     ],
     spawns:[{x:640,y:400},{x:800,y:400}],
     hazards:[{ type:'wind', y:500, h:110, dir:1, cycle:300, warn:60, active:120, offset:0 }] },
-  planicie: { id:'planicie', name:'PLANÍCIE VERDE', desc:'Natureza exuberante.', bg:['#2f9fe8','#8fd8ff','#d6f3ff'], accentColor:'#38b000', lowY:760,
+  planicie: { id:'planicie', name:'ILHA DOS ANTIGOS', desc:'Ruínas flutuantes sobre o mar.', bg:['#1f78d0','#6cc3f2','#dcf6f8'], accentColor:'#3fc9d8', lowY:640,
     platforms:[
-      { x:0, y:700, w:1440, h:110, main:true },          // chão
-      { x:90, y:500, w:270, h:30, tree:true },           // ilha esquerda (com árvore)
-      { x:430, y:590, w:300, h:30 },                     // ilha do meio
-      { x:520, y:460, w:180, h:15, bridge:true },        // ponte de madeira
-      { x:560, y:330, w:240, h:30 },                     // plataforma do céu (liga ao lado esquerdo)
-      { x:880, y:400, w:140, h:300, solid:true },        // pilar
-      { x:860, y:300, w:500, h:30 },                     // plataforma direita grande
-      { x:1010, y:150, w:230, h:30 },                    // plataforma alta
-      { x:1130, y:590, w:210, h:30 },                    // NOVO: degrau direito 1
-      { x:1250, y:450, w:150, h:30 }                     // NOVO: degrau direito 2
+      { x:440, y:520, w:560, h:30, main:true },                 // ilha principal (pedra antiga com placa metálica)
+      { x:150, y:450, w:190, h:20 }, { x:1100, y:450, w:190, h:20 },
+      { x:360, y:340, w:160, h:18 }, { x:920, y:340, w:160, h:18 },
+      { x:620, y:215, w:200, h:18 }
     ],
-    spawns:[{x:330,y:640},{x:790,y:640}], hazards:[] }
+    spawns:[{x:650,y:450},{x:790,y:450}], hazards:[] }
 };
+
+// Amplia a geometria dos mapas para o mundo maior (plataformas, spawns, hazards, lava).
+(function scaleMaps() {
+  const r = v => Math.round(v * MAP_K);
+  for (const m of Object.values(MAPS)) {
+    for (const f of ['lavaY', 'lowY']) if (m[f]) m[f] = r(m[f]);
+    for (const pl of m.platforms) { pl.x = r(pl.x); pl.y = r(pl.y); pl.w = r(pl.w); pl.h = r(pl.h); if (pl.range) pl.range = r(pl.range); }
+    for (const sp of m.spawns) { sp.x = r(sp.x); sp.y = r(sp.y); }
+    for (const h of m.hazards) for (const f of ['x', 'top', 'y', 'h']) if (h[f] !== undefined) h[f] = r(h[f]);
+  }
+})();
 
 // ============================================================
 // ESTADO GLOBAL E REDE
@@ -216,7 +284,7 @@ const S = {
 let socket = null, isHost = false, isMultiplayer = false, myRoomCode = "", mySeat = 0;
 
 const keys = {};
-window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase())) e.preventDefault(); });
+window.addEventListener('keydown', e => { const k = e.key.toLowerCase(); keys[k] = true; if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k) || (S.screen === 'playing' && isBoundKey(k))) e.preventDefault(); });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
 const mouse = { x:0, y:0, click:false };
@@ -619,6 +687,293 @@ if (HAS_DOM) {
   for (const id of ['authName', 'authPass', 'authPass2']) authEl(id).addEventListener('keydown', e => {
     e.stopPropagation();   // as teclas não chegam aos controlos do jogo
     if (e.key === 'Enter') { e.preventDefault(); authSubmit(); } else if (e.key === 'Escape') authClose();
+  });
+}
+
+// ============================================================
+// DEFINIÇÕES: TECLAS E VOLUME (guardadas no browser)
+// ============================================================
+const ACTIONS = [
+  ['left', 'Esquerda'], ['right', 'Direita'], ['jump', 'Saltar'], ['down', 'Baixo / descer'],
+  ['light', 'Ataque leve'], ['heavy', 'Ataque pesado'], ['special', 'Especial'], ['dodge', 'Esquiva']
+];
+const SETTINGS_KEY = 'brawl_settings';
+const defaultVol = () => ({ master: 80, music: 35, sfx: 70 });
+const defaultBinds = () => [
+  { left: 'a', right: 'd', jump: 'w', down: 's', light: 'j', heavy: 'k', special: 'l', dodge: 'shift' },
+  { left: 'arrowleft', right: 'arrowright', jump: 'arrowup', down: 'arrowdown', light: '1', heavy: '2', special: '3', dodge: '0' }
+];
+const BLOCKED_KEYS = new Set(['escape', 'enter', 'tab', 'dead', 'unidentified', 'control', 'alt', 'altgraph', 'meta', 'os', 'capslock', 'contextmenu', 'process']);
+function isAllowedKey(k) {
+  return typeof k === 'string' && k.length > 0 && k.length <= 14 && !BLOCKED_KEYS.has(k) && !/^f\d{1,2}$/.test(k);
+}
+function hasDupBinds(binds) {
+  const seen = new Set();
+  for (const b of binds) for (const [a] of ACTIONS) { if (seen.has(b[a])) return true; seen.add(b[a]); }
+  return false;
+}
+function loadSettings() {
+  const d = { vol: defaultVol(), binds: defaultBinds() };
+  if (!HAS_DOM) return d;
+  try {
+    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
+    if (raw && typeof raw === 'object') {
+      for (const k of ['master', 'music', 'sfx']) {
+        const v = raw.vol ? Number(raw.vol[k]) : NaN;
+        if (Number.isFinite(v)) d.vol[k] = Math.max(0, Math.min(100, Math.round(v)));
+      }
+      const binds = defaultBinds();
+      for (let i = 0; i < 2; i++) for (const [a] of ACTIONS) {
+        const v = raw.binds && raw.binds[i] ? raw.binds[i][a] : null;
+        if (isAllowedKey(v) || v === 'shift') binds[i][a] = v;
+      }
+      if (!hasDupBinds(binds)) d.binds = binds;      // ficheiro adulterado/duplicado: mantém as predefinições
+    }
+  } catch (_) {}
+  return d;
+}
+const SETTINGS = loadSettings();
+function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(SETTINGS)); } catch (_) {} }
+function isBoundKey(k) { return SETTINGS.binds.some(b => ACTIONS.some(([a]) => b[a] === k)); }
+// Atribui uma tecla. Se já estava noutra ação, as duas trocam de tecla (nunca há teclas repetidas).
+function setBind(pi, action, key) {
+  const B = SETTINGS.binds, old = B[pi][action];
+  if (old === key) return null;
+  let swapped = null;
+  for (let j = 0; j < 2; j++) for (const [a, label] of ACTIONS) {
+    if (B[j][a] === key && !(j === pi && a === action)) { B[j][a] = old; swapped = { j, label }; }
+  }
+  B[pi][action] = key;
+  return swapped;
+}
+function keyLabel(k) {
+  const M = { ' ': 'Espaço', arrowleft: '←', arrowright: '→', arrowup: '↑', arrowdown: '↓', shift: 'Shift', backspace: '⌫', delete: 'Del', insert: 'Ins', pageup: 'PgUp', pagedown: 'PgDn' };
+  if (M[k]) return M[k];
+  return k.length === 1 ? k.toUpperCase() : k.charAt(0).toUpperCase() + k.slice(1);
+}
+
+// ============================================================
+// ÁUDIO (sintetizado com Web Audio: não precisa de ficheiros)
+// ============================================================
+const AUD = { ctx: null, master: null, music: null, sfx: null, noise: null, last: {} };
+const volCurve = v => Math.pow(v / 100, 2);
+function applyVolumes() {
+  if (!AUD.ctx) return;
+  const t = AUD.ctx.currentTime, V = SETTINGS.vol;
+  AUD.master.gain.setTargetAtTime(volCurve(V.master), t, 0.02);
+  AUD.music.gain.setTargetAtTime(volCurve(V.music), t, 0.02);
+  AUD.sfx.gain.setTargetAtTime(volCurve(V.sfx), t, 0.02);
+}
+function audioUnlock() {                       // os browsers só deixam tocar depois de um clique/tecla
+  if (!HAS_DOM) return;
+  if (!AUD.ctx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try {
+      const c = new AC();
+      AUD.ctx = c;
+      AUD.master = c.createGain(); AUD.music = c.createGain(); AUD.sfx = c.createGain();
+      AUD.music.connect(AUD.master); AUD.sfx.connect(AUD.master);
+      const comp = c.createDynamicsCompressor(); AUD.master.connect(comp); comp.connect(c.destination);
+      const buf = c.createBuffer(1, c.sampleRate, c.sampleRate), d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      AUD.noise = buf;
+      AUD.master.gain.value = volCurve(SETTINGS.vol.master);
+      AUD.music.gain.value = volCurve(SETTINGS.vol.music);
+      AUD.sfx.gain.value = volCurve(SETTINGS.vol.sfx);
+      setInterval(musicTick, 40);
+    } catch (_) { AUD.ctx = null; return; }
+  }
+  if (AUD.ctx.state === 'suspended') AUD.ctx.resume().catch(() => {});
+}
+function sfxTone(t, o) {
+  const c = AUD.ctx, osc = c.createOscillator(), g = c.createGain();
+  osc.type = o.type || 'square'; osc.frequency.setValueAtTime(o.f, t);
+  if (o.f2) osc.frequency.exponentialRampToValueAtTime(Math.max(20, o.f2), t + o.dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.vol, t + (o.attack || 0.004));
+  g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
+  osc.connect(g); g.connect(o.bus || AUD.sfx); osc.start(t); osc.stop(t + o.dur + 0.03);
+}
+function sfxNoise(t, o) {
+  const c = AUD.ctx, src = c.createBufferSource(), fl = c.createBiquadFilter(), g = c.createGain();
+  src.buffer = AUD.noise; fl.type = o.ft || 'bandpass'; fl.Q.value = o.q || 1;
+  fl.frequency.setValueAtTime(o.f, t); if (o.f2) fl.frequency.exponentialRampToValueAtTime(Math.max(40, o.f2), t + o.dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.vol, t + 0.006); g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
+  src.connect(fl); fl.connect(g); g.connect(o.bus || AUD.sfx); src.start(t, Math.random() * 0.4); src.stop(t + o.dur + 0.03);
+}
+const midiHz = n => 440 * Math.pow(2, (n - 69) / 12);
+const SFX = {
+  click(t) { sfxTone(t, { type: 'square', f: 640, f2: 900, dur: 0.07, vol: 0.14 }); },
+  tick(t) { sfxTone(t, { type: 'triangle', f: 880, dur: 0.05, vol: 0.2 }); },
+  jump(t) { sfxTone(t, { type: 'square', f: 260, f2: 560, dur: 0.12, vol: 0.1 }); },
+  dodge(t) { sfxNoise(t, { f: 1800, f2: 500, q: 0.8, dur: 0.16, vol: 0.2 }); },
+  swing_light(t) { sfxNoise(t, { f: 2400, f2: 900, q: 1.2, dur: 0.09, vol: 0.16 }); },
+  swing_heavy(t) { sfxNoise(t, { f: 1400, f2: 300, q: 1, dur: 0.2, vol: 0.26 }); sfxTone(t, { type: 'sawtooth', f: 150, f2: 70, dur: 0.18, vol: 0.09 }); },
+  swing_special(t) { sfxTone(t, { type: 'sawtooth', f: 300, f2: 900, dur: 0.18, vol: 0.12 }); },
+  shoot_fire(t) { sfxNoise(t, { ft: 'lowpass', f: 1800, f2: 300, dur: 0.3, vol: 0.22 }); sfxTone(t, { type: 'sawtooth', f: 220, f2: 90, dur: 0.25, vol: 0.08 }); },
+  shoot_ice(t) { sfxTone(t, { type: 'triangle', f: 1400, f2: 2200, dur: 0.14, vol: 0.12 }); },
+  shoot_bolt(t) { sfxTone(t, { type: 'square', f: 1200, f2: 200, dur: 0.14, vol: 0.12 }); sfxNoise(t, { ft: 'highpass', f: 3000, dur: 0.08, vol: 0.12 }); },
+  hit(t, s = 0.5) {
+    sfxNoise(t, { ft: 'lowpass', f: 2800, f2: 300, dur: 0.12 + 0.1 * s, vol: 0.22 + 0.2 * s });
+    sfxTone(t, { type: 'square', f: 210 - 60 * s, f2: 60, dur: 0.12, vol: 0.16 + 0.12 * s });
+  },
+  ko(t) {
+    sfxTone(t, { type: 'sawtooth', f: 420, f2: 45, dur: 0.55, vol: 0.2 });
+    sfxNoise(t, { ft: 'lowpass', f: 3000, f2: 120, dur: 0.6, vol: 0.3 });
+  },
+  start(t) { [60, 64, 67].forEach((n, i) => sfxTone(t + i * 0.08, { type: 'square', f: midiHz(n + 12), dur: 0.14, vol: 0.1 })); },
+  win(t) { [72, 76, 79, 84].forEach((n, i) => sfxTone(t + i * 0.12, { type: 'square', f: midiHz(n), dur: i === 3 ? 0.5 : 0.16, vol: 0.12 })); },
+  lose(t) { [67, 64, 60, 55].forEach((n, i) => sfxTone(t + i * 0.16, { type: 'triangle', f: midiHz(n), dur: i === 3 ? 0.6 : 0.2, vol: 0.16 })); }
+};
+function sfx(name, arg) {
+  if (!AUD.ctx || AUD.ctx.state !== 'running' || !SFX[name]) return;
+  const now = performance.now();
+  if (now - (AUD.last[name] || 0) < 45) return;      // evita metralhar o mesmo som
+  AUD.last[name] = now;
+  try { SFX[name](AUD.ctx.currentTime + 0.005, arg); } catch (_) {}
+}
+// Música de fundo simples (Lá menor), mais rápida durante o combate.
+const MUSIC = { step: 0, next: 0 };
+const CHORD_ROOTS = [45, 41, 48, 43], CHORD_THIRD = [3, 4, 4, 4], ARP_PAT = [0, 1, 2, 1, 0, 1, 2, 1];
+function musicStep(t, step, intense, dur) {
+  const chord = Math.floor(step / 8) % 4, root = CHORD_ROOTS[chord], third = CHORD_THIRD[chord], i = step % 8;
+  const tones = [root + 24, root + 24 + third, root + 24 + 7];
+  if (i % 2 === 0) sfxTone(t, { type: 'triangle', f: midiHz(root), dur: dur * 1.8, vol: intense ? 0.1 : 0.08, bus: AUD.music, attack: 0.01 });
+  sfxTone(t, { type: intense ? 'square' : 'triangle', f: midiHz(tones[ARP_PAT[i]] + (i === 7 ? 12 : 0)), dur: dur * 0.9, vol: intense ? 0.03 : 0.045, bus: AUD.music, attack: 0.01 });
+  if (intense && i % 2 === 1) sfxNoise(t, { ft: 'highpass', f: 6000, dur: 0.04, vol: 0.03, bus: AUD.music });
+}
+function musicTick() {
+  const c = AUD.ctx;
+  if (!c || c.state !== 'running' || SETTINGS.vol.music <= 0 || SETTINGS.vol.master <= 0) { MUSIC.next = 0; return; }
+  const intense = S.screen === 'playing', dur = 60 / (intense ? 150 : 96) / 2;
+  if (!MUSIC.next || MUSIC.next < c.currentTime - 0.3) MUSIC.next = c.currentTime + 0.05;
+  while (MUSIC.next < c.currentTime + 0.25) { musicStep(MUSIC.next, MUSIC.step++, intense, dur); MUSIC.next += dur; }
+}
+// Sons de jogo deduzidos do estado (funciona igual offline e online, sem mexer no motor/servidor).
+const AOBS = { screen: '', prev: new Map(), proj: new Set() };
+function audioObserve() {
+  if (!AUD.ctx) return;
+  const scr = S.screen;
+  if (scr !== AOBS.screen) {
+    if (scr === 'playing') { AOBS.prev.clear(); AOBS.proj.clear(); sfx('start'); }
+    if (scr === 'gameover' && AOBS.screen === 'playing') {
+      const w = S.winner, won = !w || (isMultiplayer ? w.idx === mySeat : S.mode === '1p' ? w.idx === 0 : true);
+      sfx(won ? 'win' : 'lose');
+    }
+    AOBS.screen = scr;
+  }
+  if (scr !== 'playing') return;
+  for (const p of S.players) {
+    const cur = { damage: p.damage || 0, stocks: p.stocks, atk: p.attack ? p.attack.type : null, dodge: p.dodging > 0, jumps: p.jumpsLeft, grounded: !!p.grounded, respawn: p.respawn > 0 };
+    const pv = AOBS.prev.get(p.idx);
+    if (pv) {
+      if (cur.stocks < pv.stocks) sfx('ko');
+      else if (cur.damage > pv.damage + 0.01 && !pv.respawn && !cur.respawn) sfx('hit', Math.min(1, (cur.damage - pv.damage) / 15));
+      if (cur.atk && cur.atk !== pv.atk) sfx('swing_' + cur.atk);
+      if (cur.dodge && !pv.dodge) sfx('dodge');
+      if (!cur.respawn && ((pv.grounded && !cur.grounded && p.vy < -4) || (!cur.grounded && !pv.grounded && cur.jumps < pv.jumps))) sfx('jump');
+    }
+    AOBS.prev.set(p.idx, cur);
+  }
+  const seen = new Set();
+  for (const pr of S.projectiles) {
+    const key = pr.id !== undefined ? 'i' + pr.id : pr;
+    seen.add(key);
+    if (!AOBS.proj.has(key)) sfx('shoot_' + (pr.kind === 'wave' ? 'fire' : pr.kind === 'ice' || pr.kind === 'fire' ? pr.kind : 'bolt'));
+  }
+  AOBS.proj = seen;
+}
+
+// ============================================================
+// JANELA DE DEFINIÇÕES
+// ============================================================
+const SETUI = { tab: 'sound', listening: null, downOnOverlay: false };
+const setEl = id => document.getElementById(id);
+function setHint(msg, warn) { const h = setEl('setHint'); h.textContent = msg || ''; h.classList.toggle('warn', !!warn); }
+function refreshKeyButtons() {
+  document.querySelectorAll('#setKeysGrid .key-btn').forEach(b => {
+    const pi = +b.dataset.p, a = b.dataset.a, on = SETUI.listening && SETUI.listening.pi === pi && SETUI.listening.action === a;
+    b.textContent = on ? 'Prime uma tecla…' : keyLabel(SETTINGS.binds[pi][a]);
+    b.classList.toggle('listening', !!on);
+  });
+}
+function refreshVolumeUI() {
+  for (const [k, id] of [['master', 'Master'], ['music', 'Music'], ['sfx', 'Sfx']]) {
+    setEl('setVol' + id).value = SETTINGS.vol[k]; setEl('setVal' + id).textContent = SETTINGS.vol[k] + '%';
+  }
+}
+function setTab(tab) {
+  SETUI.tab = tab; SETUI.listening = null; refreshKeyButtons();
+  setEl('setTabSound').classList.toggle('on', tab === 'sound');
+  setEl('setTabKeys').classList.toggle('on', tab === 'keys');
+  setEl('setPaneSound').style.display = tab === 'sound' ? 'block' : 'none';
+  setEl('setPaneKeys').style.display = tab === 'keys' ? 'block' : 'none';
+  setHint(tab === 'keys' ? 'Clica numa tecla e prime a nova. Esc cancela. Jogador 1 é usado online, no Ranked e contra a IA.' : '');
+}
+function openSettings(tab) {
+  if (!HAS_DOM) return;
+  for (const k in keys) keys[k] = false;
+  refreshVolumeUI(); setTab(tab || SETUI.tab);
+  const ov = setEl('setOverlay'); ov.style.display = 'flex'; void ov.offsetWidth; ov.classList.add('open');
+}
+function closeSettings() {
+  SETUI.listening = null; refreshKeyButtons(); saveSettings();
+  const ov = setEl('setOverlay'); ov.classList.remove('open'); ov.style.display = 'none';
+  mouse.click = false;
+}
+function endListen(msg, warn) { SETUI.listening = null; refreshKeyButtons(); setHint(msg, warn); }
+if (HAS_DOM) {
+  const grid = setEl('setKeysGrid');
+  const mk = (cls, txt) => { const d = document.createElement('div'); d.className = cls; d.textContent = txt; return d; };
+  grid.append(mk('keys-head', ''), mk('keys-head', 'Jogador 1'), mk('keys-head', 'Jogador 2'));
+  for (const [a, label] of ACTIONS) {
+    grid.append(mk('keys-act', label));
+    for (let pi = 0; pi < 2; pi++) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'key-btn'; b.dataset.p = pi; b.dataset.a = a;
+      b.addEventListener('click', () => { SETUI.listening = { pi, action: a }; refreshKeyButtons(); setHint('A aguardar tecla para «' + label + '»…'); });
+      grid.append(b);
+    }
+  }
+  refreshKeyButtons(); refreshVolumeUI();
+  for (const [k, id] of [['master', 'Master'], ['music', 'Music'], ['sfx', 'Sfx']]) {
+    const r = setEl('setVol' + id);
+    r.addEventListener('input', () => { SETTINGS.vol[k] = +r.value; setEl('setVal' + id).textContent = r.value + '%'; applyVolumes(); });
+    r.addEventListener('change', () => { saveSettings(); sfx(k === 'sfx' ? 'hit' : 'tick', 0.5); });   // som de teste
+  }
+  setEl('setTabSound').addEventListener('click', () => setTab('sound'));
+  setEl('setTabKeys').addEventListener('click', () => setTab('keys'));
+  setEl('setClose').addEventListener('click', closeSettings);
+  setEl('setDone').addEventListener('click', closeSettings);
+  setEl('setReset').addEventListener('click', () => {
+    if (SETUI.tab === 'sound') { SETTINGS.vol = defaultVol(); refreshVolumeUI(); applyVolumes(); setHint('Volume reposto.'); }
+    else { SETTINGS.binds = defaultBinds(); SETUI.listening = null; refreshKeyButtons(); setHint('Teclas repostas.'); }
+    saveSettings();
+  });
+  const ov = setEl('setOverlay');
+  ov.addEventListener('mousedown', e => { SETUI.downOnOverlay = e.target === ov; });
+  ov.addEventListener('click', e => { if (e.target === ov && SETUI.downOnOverlay) closeSettings(); });
+  // Captura as teclas enquanto a janela está aberta: não chegam ao jogo.
+  window.addEventListener('keydown', e => {
+    if (!ov.classList.contains('open')) return;
+    const k = e.key.toLowerCase();
+    if (SETUI.listening) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (e.repeat) return;
+      if (k === 'escape') return endListen('Alteração cancelada.');
+      if (!isAllowedKey(k)) return setHint('Essa tecla não pode ser usada. Escolhe outra.', true);
+      const { pi, action } = SETUI.listening, swapped = setBind(pi, action, k);
+      saveSettings();
+      return endListen(swapped ? 'A tecla já estava em «' + swapped.label + '» (Jogador ' + (swapped.j + 1) + '): trocaram de tecla.' : 'Tecla guardada.');
+    }
+    if (k === 'escape') { e.preventDefault(); closeSettings(); }
+    e.stopImmediatePropagation();
+  }, true);
+  window.addEventListener('pointerdown', audioUnlock, true);
+  window.addEventListener('keydown', audioUnlock, true);
+  document.addEventListener('visibilitychange', () => {
+    if (!AUD.ctx) return;
+    if (document.hidden) AUD.ctx.suspend().catch(() => {}); else AUD.ctx.resume().catch(() => {});
   });
 }
 
@@ -1446,24 +1801,17 @@ function drawPixelPlatform(x, y, w, h, isBridge = false) {
 }
 
 function drawBackground(m, f) {
+  const WW = 1440, WH = 810;                       // o fundo foi desenhado neste espaço; é ampliado para o mundo atual
+  ctx.save(); ctx.scale(MAP_K, MAP_K);
   const g = ctx.createLinearGradient(0, 0, 0, WH); g.addColorStop(0, m.bg[0]); g.addColorStop(0.6, m.bg[1]); g.addColorStop(1, m.bg[2]); ctx.fillStyle = g; ctx.fillRect(0, 0, WW, WH);
   if (m.id === 'planicie') {
-    const sun = ctx.createRadialGradient(1150, 150, 10, 1150, 150, 260); sun.addColorStop(0, 'rgba(255,250,200,0.95)'); sun.addColorStop(0.25, 'rgba(255,240,170,0.5)'); sun.addColorStop(1, 'rgba(255,240,170,0)'); ctx.fillStyle = sun; ctx.fillRect(850, 0, 590, 450);
-    ctx.fillStyle = '#fff6c8'; ctx.beginPath(); ctx.arc(1150, 150, 46, 0, 6.283); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    for (let i = 0; i < 6; i++) { const x = ((i * 330 + f * (0.15 + (i % 3) * 0.08)) % (WW + 300)) - 150, y = 90 + (i * 83) % 260, s = 1 + (i % 3) * 0.35; ctx.fillRect(x, y, 90*s, 18*s); ctx.fillRect(x + 18*s, y - 16*s, 54*s, 18*s); ctx.fillRect(x - 16*s, y + 18*s, 120*s, 14*s); }
-    const mt = (c, base, amp, k, ph) => { ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(0, 720); for (let x = 0; x <= WW; x += 40) ctx.lineTo(x, base - Math.abs(Math.sin(x * k + ph)) * amp); ctx.lineTo(WW, 720); ctx.fill(); };
-    mt('#9db4d4', 580, 240, 0.0045, 1); mt('#7f9bbf', 620, 170, 0.0065, 3);
-    ctx.fillStyle = '#3f9e5a'; ctx.beginPath(); ctx.moveTo(0, 720); ctx.quadraticCurveTo(360, 560, 760, 690); ctx.quadraticCurveTo(1100, 580, 1440, 690); ctx.lineTo(1440, 720); ctx.fill();
-    for (let i = 0; i < 16; i++) { const x = i * 92 + hash(i) * 50, y = 672 - hash(i + 4) * 24, s = 0.8 + hash(i + 8) * 0.6; ctx.fillStyle = '#6b3f22'; ctx.fillRect(x - 3, y, 6, 22*s); ctx.fillStyle = '#1d7a3e'; ctx.beginPath(); ctx.moveTo(x - 20*s, y + 6); ctx.lineTo(x + 20*s, y + 6); ctx.lineTo(x, y - 40*s); ctx.fill(); }
-    ctx.fillStyle = '#5c4b63'; for (let i = 0; i < WW; i += 60) { ctx.beginPath(); ctx.arc(i + 10, 700, 34 + Math.sin(i * 0.05) * 8, Math.PI, 0); ctx.fill(); }
-    ctx.strokeStyle = '#2a3a55'; ctx.lineWidth = 3; for (let i = 0; i < 3; i++) { const x = ((f * 0.7 + i * 520) % (WW + 100)) - 50, y = 130 + i * 55 + Math.sin(f * 0.05 + i) * 10; ctx.beginPath(); ctx.moveTo(x - 10, y); ctx.lineTo(x, y + 5); ctx.lineTo(x + 10, y); ctx.stroke(); }
+    drawIslandBackground(f);
   } else if (m.id === 'forja') {
     const vol = (cx, w, h) => { ctx.fillStyle = '#1a0502'; ctx.beginPath(); ctx.moveTo(cx - w, 760); ctx.lineTo(cx - w*0.12, 760 - h); ctx.lineTo(cx + w*0.12, 760 - h); ctx.lineTo(cx + w, 760); ctx.fill(); const gl = ctx.createRadialGradient(cx, 760 - h, 4, cx, 760 - h, 100); gl.addColorStop(0, 'rgba(255,140,30,0.9)'); gl.addColorStop(1, 'rgba(255,60,0,0)'); ctx.fillStyle = gl; ctx.fillRect(cx - 100, 760 - h - 100, 200, 200); };
     vol(260, 330, 380); vol(1170, 380, 430); vol(720, 300, 250);
     ctx.fillStyle = '#120301'; for (let i = 0; i < 16; i++) { const x = i * 96 + hash(i) * 40, h = 40 + hash(i + 9) * 110; ctx.beginPath(); ctx.moveTo(x - 30, 0); ctx.lineTo(x + 30, 0); ctx.lineTo(x, h); ctx.fill(); }
     for (let i = 0; i < 40; i++) { ctx.globalAlpha = 0.35 + hash(i + 7) * 0.5; ctx.fillStyle = i % 3 ? '#ff7a1a' : '#ffd24a'; ctx.fillRect(hash(i) * WW + Math.sin(f * 0.02 + i) * 30, WH - ((f * (0.4 + hash(i + 5)) + hash(i + 2) * WH) % WH), 3, 3); } ctx.globalAlpha = 1;
-    const ly = m.lavaY, lg = ctx.createLinearGradient(0, ly - 30, 0, WH); lg.addColorStop(0, '#ffb020'); lg.addColorStop(0.15, '#ff5a00'); lg.addColorStop(1, '#a01000'); ctx.fillStyle = lg; ctx.beginPath(); ctx.moveTo(0, WH);
+    const ly = m.lavaY / MAP_K, lg = ctx.createLinearGradient(0, ly - 30, 0, WH); lg.addColorStop(0, '#ffb020'); lg.addColorStop(0.15, '#ff5a00'); lg.addColorStop(1, '#a01000'); ctx.fillStyle = lg; ctx.beginPath(); ctx.moveTo(0, WH);
     for (let x = 0; x <= WW; x += 20) ctx.lineTo(x, ly + Math.sin(x * 0.02 + f * 0.06) * 5 + Math.sin(x * 0.05 - f * 0.04) * 3); ctx.lineTo(WW, WH); ctx.fill();
     ctx.fillStyle = 'rgba(255,230,120,0.6)'; for (let i = 0; i < 10; i++) { const ph = (f * 0.02 + hash(i)) % 1; ctx.beginPath(); ctx.arc(hash(i + 20) * WW, ly + 12 + ph * 40, 3 + (1 - ph) * 5, 0, 6.283); ctx.fill(); }
     const gl2 = ctx.createLinearGradient(0, ly - 200, 0, ly); gl2.addColorStop(0, 'rgba(255,80,0,0)'); gl2.addColorStop(1, 'rgba(255,90,0,0.35)'); ctx.fillStyle = gl2; ctx.fillRect(0, ly - 200, WW, 200);
@@ -1475,6 +1823,7 @@ function drawBackground(m, f) {
     isl(220, 240 + Math.sin(f * 0.01) * 6, 1); isl(780, 120 + Math.sin(f * 0.012 + 2) * 6, 0.7); isl(1280, 420 + Math.sin(f * 0.011 + 4) * 6, 0.9);
     ctx.fillStyle = 'rgba(120,150,210,0.28)'; for (let i = 0; i < 6; i++) { const x = ((i * 300 + f * (0.2 + 0.05 * i)) % (WW + 400)) - 200, y = 700 + (i % 3) * 40; ctx.beginPath(); ctx.ellipse(x, y, 180, 34, 0, 0, 6.283); ctx.ellipse(x + 90, y - 14, 120, 30, 0, 0, 6.283); ctx.fill(); }
   }
+  ctx.restore();
 }
 
 function drawTree(cx, y) {
@@ -1483,15 +1832,257 @@ function drawTree(cx, y) {
   ctx.fillStyle = '#2fc060'; ctx.fillRect(cx - 40, y - 186, 40, 10); ctx.fillRect(cx - 62, y - 146, 36, 10); ctx.fillStyle = '#176e36'; ctx.fillRect(cx - 70, y - 116, 140, 6);
 }
 
+// ============================================================
+// MAPA "ILHA DOS ANTIGOS": arte desenhada em canvas (sem ficheiros externos)
+// Fundo: espaço de desenho 1440x810 (ampliado por drawBackground). Plataformas: coordenadas do mundo.
+// ============================================================
+let ISLAND_BG = null;
+const ISL_HORIZON = 575;
+
+function islCloud(g, cx, cy, s, a) {
+  const P = [[-78, 10, 44], [-36, -8, 56], [14, -16, 64], [66, -2, 52], [104, 12, 38], [-6, 16, 58]];
+  for (const [dx, dy, r] of P) {            // sombra azulada por baixo
+    const rg = g.createRadialGradient(cx + dx * s, cy + (dy + 14) * s, r * s * 0.1, cx + dx * s, cy + (dy + 14) * s, r * s);
+    rg.addColorStop(0, 'rgba(150,190,228,' + (a * 0.55) + ')'); rg.addColorStop(1, 'rgba(150,190,228,0)');
+    g.fillStyle = rg; g.beginPath(); g.arc(cx + dx * s, cy + (dy + 14) * s, r * s, 0, 6.283); g.fill();
+  }
+  for (const [dx, dy, r] of P) {            // corpo branco
+    const rg = g.createRadialGradient(cx + dx * s, cy + (dy - 8) * s, r * s * 0.1, cx + dx * s, cy + dy * s, r * s);
+    rg.addColorStop(0, 'rgba(255,255,255,' + a + ')'); rg.addColorStop(0.65, 'rgba(255,255,255,' + (a * 0.9) + ')'); rg.addColorStop(1, 'rgba(240,250,255,0)');
+    g.fillStyle = rg; g.beginPath(); g.arc(cx + dx * s, cy + dy * s, r * s, 0, 6.283); g.fill();
+  }
+}
+function islPalm(g, x, y, s, col) {
+  g.strokeStyle = col; g.lineWidth = 3 * s; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(x, y); g.quadraticCurveTo(x + 6 * s, y - 24 * s, x + 2 * s, y - 46 * s); g.stroke();
+  for (let i = 0; i < 6; i++) {
+    const a = -Math.PI / 2 + (i - 2.5) * 0.62, lx = x + 2 * s + Math.cos(a) * 26 * s, ly = y - 46 * s + Math.sin(a) * 18 * s + 10 * s;
+    g.beginPath(); g.moveTo(x + 2 * s, y - 46 * s); g.quadraticCurveTo(x + 2 * s + Math.cos(a) * 14 * s, y - 56 * s + Math.sin(a) * 8 * s, lx, ly); g.stroke();
+  }
+}
+
+// camadas estáticas (céu, nuvens grandes, falésia, torre, ilha distante, mar, praia)
+function islandStatic(g) {
+  const H = ISL_HORIZON;
+  // céu
+  let gr = g.createLinearGradient(0, 0, 0, H);
+  gr.addColorStop(0, '#1f78d0'); gr.addColorStop(0.4, '#4aa9ea'); gr.addColorStop(0.8, '#a6e0f4'); gr.addColorStop(1, '#dcf6f8');
+  g.fillStyle = gr; g.fillRect(0, 0, 1440, H + 2);
+  // sol e feixes de luz
+  gr = g.createRadialGradient(1130, 150, 8, 1130, 150, 380); gr.addColorStop(0, 'rgba(255,252,220,0.95)'); gr.addColorStop(0.18, 'rgba(255,244,190,0.45)'); gr.addColorStop(1, 'rgba(255,240,190,0)');
+  g.fillStyle = gr; g.fillRect(700, 0, 740, 560);
+  g.fillStyle = 'rgba(255,255,255,0.05)';
+  for (let i = 0; i < 6; i++) { g.beginPath(); g.moveTo(1130, 150); g.lineTo(1130 - 160 - i * 140, 620); g.lineTo(1130 - 60 - i * 140, 620); g.closePath(); g.fill(); }
+  g.fillStyle = '#fffbe6'; g.beginPath(); g.arc(1130, 150, 30, 0, 6.283); g.fill();
+  // grande massa de nuvens (canto superior direito)
+  for (const [x, y, s, a] of [[1220, 70, 2.1, 0.8], [1010, 40, 1.6, 0.65], [1380, 190, 1.7, 0.7], [820, 110, 1.2, 0.5]]) islCloud(g, x, y, s, a);
+  // nuvens baixas junto ao horizonte
+  for (const [x, y, s, a] of [[560, 520, 1.3, 0.55], [900, 540, 1.7, 0.6], [1280, 505, 1.2, 0.5], [90, 545, 1.5, 0.5]]) islCloud(g, x, y, s, a);
+
+  // ilha distante à direita (colinas + palmeiras)
+  const hill = (c1, c2, pts) => { const hg = g.createLinearGradient(0, 520, 0, H + 6); hg.addColorStop(0, c1); hg.addColorStop(1, c2); g.fillStyle = hg; g.beginPath(); g.moveTo(pts[0][0], H + 6); for (const p of pts) g.lineTo(p[0], p[1]); g.lineTo(pts[pts.length - 1][0], H + 6); g.closePath(); g.fill(); };
+  hill('#7fb3b0', '#5f9a9a', [[1010, 575], [1070, 545], [1130, 536], [1190, 520], [1250, 528], [1320, 508], [1380, 522], [1440, 530], [1440, 575]]);
+  hill('#4d9283', '#356f6a', [[1150, 576], [1210, 556], [1280, 548], [1350, 552], [1440, 540], [1440, 580]]);
+  for (const [x, y, s] of [[1250, 552, 0.9], [1290, 548, 1.1], [1360, 552, 1.0], [1405, 544, 0.8]]) islPalm(g, x, y, s, '#25564f');
+
+  // falésia à esquerda
+  const cliff = [[0, 215], [40, 205], [90, 228], [130, 224], [175, 250], [215, 262], [250, 300], [270, 345], [300, 380], [318, 440], [345, 500], [372, 560], [395, 612], [0, 612]];
+  g.save(); g.beginPath(); cliff.forEach((p, i) => i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])); g.closePath(); g.clip();
+  gr = g.createLinearGradient(0, 200, 420, 600); gr.addColorStop(0, '#7f9dbd'); gr.addColorStop(0.5, '#a9bed4'); gr.addColorStop(1, '#6a86a8');
+  g.fillStyle = gr; g.fillRect(0, 190, 430, 430);
+  for (let i = 0; i < 70; i++) {                       // blocos verticais de rocha
+    const x = hash(i + 3) * 430, w = 6 + hash(i + 9) * 26, y0 = 200 + hash(i + 15) * 120;
+    g.fillStyle = hash(i) > 0.5 ? 'rgba(40,70,110,0.13)' : 'rgba(255,255,255,0.10)'; g.fillRect(x, y0, w, 440);
+  }
+  g.strokeStyle = 'rgba(40,65,100,0.28)'; g.lineWidth = 2;   // estratos
+  for (let y = 250; y < 620; y += 24) { g.beginPath(); g.moveTo(0, y + hash(y) * 8); for (let x = 0; x <= 420; x += 30) g.lineTo(x, y + Math.sin(x * 0.04 + y) * 5 + hash(x + y) * 6); g.stroke(); }
+  gr = g.createLinearGradient(0, 520, 0, 612); gr.addColorStop(0, 'rgba(220,240,250,0)'); gr.addColorStop(1, 'rgba(225,245,252,0.85)'); g.fillStyle = gr; g.fillRect(0, 520, 430, 92);   // névoa na base
+  g.restore();
+  for (let x = 0; x < 260; x += 14) {                    // vegetação no topo da falésia
+    const p = cliff.find((q, i) => cliff[i + 1] && x >= q[0] && x < cliff[i + 1][0]);
+    if (!p) continue;
+    const n = cliff[cliff.indexOf(p) + 1], y = p[1] + (n[1] - p[1]) * ((x - p[0]) / (n[0] - p[0] || 1));
+    g.fillStyle = hash(x) > 0.5 ? '#4aa04a' : '#2f8040'; g.beginPath(); g.arc(x, y + 2, 10 + hash(x + 1) * 7, Math.PI, 0); g.fill();
+  }
+  // torre antiga (duas agulhas)
+  const tower = (cx, by, bw, top, needle, shade) => {
+    g.fillStyle = '#c3d3e6'; g.beginPath(); g.moveTo(cx - bw / 2, by); g.lineTo(cx - bw * 0.3, top); g.lineTo(cx + bw * 0.3, top); g.lineTo(cx + bw / 2, by); g.closePath(); g.fill();
+    g.fillStyle = shade; g.beginPath(); g.moveTo(cx + 2, by); g.lineTo(cx + 2, top); g.lineTo(cx + bw * 0.3, top); g.lineTo(cx + bw / 2, by); g.closePath(); g.fill();
+    g.fillStyle = '#e6eef8'; g.beginPath(); g.moveTo(cx - bw * 0.34, top); g.lineTo(cx, needle); g.lineTo(cx + bw * 0.34, top); g.closePath(); g.fill();
+    g.fillStyle = 'rgba(80,110,150,0.45)'; g.beginPath(); g.moveTo(cx, needle); g.lineTo(cx + bw * 0.34, top); g.lineTo(cx + 2, top); g.closePath(); g.fill();
+    g.fillStyle = '#9fb6d0'; for (let y = top + 16; y < by - 10; y += 30) g.fillRect(cx - bw * 0.36 + (y - top) * 0.02, y, bw * 0.72 - (y - top) * 0.04, 3);
+    g.fillStyle = '#fff3c4'; for (let y = top + 26; y < by - 30; y += 44) { g.fillRect(cx - 5, y, 4, 12); g.fillRect(cx + 5, y, 4, 12); }
+  };
+  tower(205, 270, 56, 128, 52, '#8ea8c6');
+  tower(262, 300, 36, 178, 118, '#8ea8c6');
+  g.strokeStyle = '#9fb6d0'; g.lineWidth = 5; g.beginPath(); g.moveTo(222, 215); g.quadraticCurveTo(240, 205, 250, 240); g.stroke();   // arcobotante
+
+  // mar
+  gr = g.createLinearGradient(0, H, 0, 810); gr.addColorStop(0, '#79dbe0'); gr.addColorStop(0.25, '#35b4cf'); gr.addColorStop(0.7, '#1a7fae'); gr.addColorStop(1, '#0f5c8e');
+  g.fillStyle = gr; g.fillRect(0, H, 1440, 235);
+  gr = g.createLinearGradient(0, H - 10, 0, H + 26); gr.addColorStop(0, 'rgba(235,252,252,0.9)'); gr.addColorStop(1, 'rgba(235,252,252,0)'); g.fillStyle = gr; g.fillRect(0, H - 10, 1440, 36);
+  gr = g.createLinearGradient(0, 0, 0, 1); // reflexo do sol
+  const rf = g.createLinearGradient(0, H, 0, 700); rf.addColorStop(0, 'rgba(255,250,210,0.45)'); rf.addColorStop(1, 'rgba(255,250,210,0)');
+  g.fillStyle = rf; g.beginPath(); g.moveTo(1090, H); g.lineTo(1170, H); g.lineTo(1260, 720); g.lineTo(990, 720); g.closePath(); g.fill();
+
+  // praia (canto inferior esquerdo)
+  gr = g.createLinearGradient(0, 690, 0, 810); gr.addColorStop(0, '#f6e7bd'); gr.addColorStop(1, '#d6b87c');
+  g.fillStyle = gr; g.beginPath(); g.moveTo(0, 668); g.bezierCurveTo(110, 676, 250, 712, 330, 770); g.lineTo(380, 810); g.lineTo(0, 810); g.closePath(); g.fill();
+  g.strokeStyle = 'rgba(160,130,80,0.55)'; g.lineWidth = 4; g.beginPath(); g.moveTo(0, 668); g.bezierCurveTo(110, 676, 250, 712, 330, 770); g.lineTo(380, 810); g.stroke();
+  g.fillStyle = 'rgba(120,95,60,0.35)'; for (let i = 0; i < 40; i++) g.fillRect(hash(i + 50) * 300, 700 + hash(i + 70) * 100, 2, 2);
+  g.fillStyle = '#7a7466'; for (const [x, y, r] of [[60, 735, 16], [112, 752, 11], [250, 758, 13]]) { g.beginPath(); g.ellipse(x, y, r * 1.4, r, 0, Math.PI, 0); g.fill(); g.fillStyle = '#9a9484'; g.beginPath(); g.ellipse(x - 3, y - 2, r * 0.8, r * 0.5, 0, Math.PI, 0); g.fill(); g.fillStyle = '#7a7466'; }
+  islPalm(g, 40, 700, 1.5, '#2d6a3a'); islPalm(g, 150, 722, 1.2, '#2d6a3a');
+}
+
+function drawIslandBackground(f) {
+  if (!ISLAND_BG) {
+    try {
+      const c = document.createElement('canvas'); c.width = 1600; c.height = 900;
+      const g = c.getContext('2d'); g.scale(MAP_K, MAP_K); islandStatic(g); ISLAND_BG = c;
+    } catch (_) { ISLAND_BG = 'direct'; }
+  }
+  if (ISLAND_BG === 'direct') islandStatic(ctx); else ctx.drawImage(ISLAND_BG, 0, 0, 1440, 810);
+  const H = ISL_HORIZON;
+  // nuvens à deriva
+  for (let i = 0; i < 4; i++) {
+    const x = ((i * 460 + f * (0.12 + i * 0.05)) % 1900) - 230;
+    islCloud(ctx, x, 120 + i * 62 + (i % 2) * 30, 0.8 + (i % 3) * 0.25, 0.55);
+  }
+  // cascatas
+  for (const [x, y0, w] of [[108, 230, 15], [186, 256, 19]]) {
+    const len = 606 - y0, wg = ctx.createLinearGradient(0, y0, 0, 606); wg.addColorStop(0, 'rgba(225,245,255,0.75)'); wg.addColorStop(1, 'rgba(235,250,255,0.95)');
+    ctx.fillStyle = wg; ctx.fillRect(x - w / 2, y0, w, len);
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    for (let i = 0; i < 9; i++) ctx.fillRect(x - w / 2 + 2 + hash(i + x) * (w - 5), y0 + ((f * 3.2 + i * 53) % len), 2, 18 + hash(i) * 20);
+    ctx.fillStyle = 'rgba(255,255,255,0.55)'; for (let i = 0; i < 5; i++) { ctx.beginPath(); ctx.arc(x + Math.sin(f * 0.05 + i) * 14, 600 - (i * 7 + f * 0.6) % 22, 8 + hash(i) * 6, 0, 6.283); ctx.fill(); }
+  }
+  // brilhos e ondas no mar
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  for (let i = 0; i < 46; i++) {
+    const a = 0.5 + 0.5 * Math.sin(f * 0.05 + i * 1.7), x = hash(i + 1) * 1440, y = H + 14 + hash(i + 2) * 200;
+    if (a > 0.55) ctx.fillRect(x, y, 6 + hash(i + 4) * 16, 2);
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = 2;
+  for (let r = 0; r < 7; r++) { const y = H + 30 + r * 30; ctx.beginPath(); for (let x = 0; x <= 1440; x += 24) ctx.lineTo(x, y + Math.sin(x * 0.02 + f * 0.03 + r * 2) * (2 + r * 0.6)); ctx.stroke(); }
+  // espuma na praia
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  const sh = Math.sin(f * 0.035) * 7;
+  ctx.beginPath(); ctx.moveTo(10 + sh, 662 + sh * 0.3); ctx.bezierCurveTo(120 + sh, 672 + sh * 0.4, 260 + sh, 710 + sh * 0.6, 340 + sh, 768 + sh * 0.7); ctx.lineTo(392 + sh, 810); ctx.stroke();
+  // aves
+  ctx.strokeStyle = 'rgba(30,50,80,0.75)'; ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i++) {
+    const x = ((f * (0.5 + i * 0.15) + i * 400) % 1700) - 120, y = 150 + i * 70 + Math.sin(f * 0.02 + i) * 12, fl = Math.sin(f * 0.22 + i) * 4;
+    ctx.beginPath(); ctx.moveTo(x - 9, y - fl); ctx.quadraticCurveTo(x - 4, y - 5 - fl, x, y); ctx.quadraticCurveTo(x + 4, y - 5 - fl, x + 9, y - fl); ctx.stroke();
+  }
+  // pólen / partículas de luz
+  ctx.fillStyle = 'rgba(255,255,230,0.7)';
+  for (let i = 0; i < 24; i++) { const x = (hash(i + 90) * 1440 + f * (0.2 + hash(i) * 0.3)) % 1440, y = 220 + hash(i + 33) * 330 + Math.sin(f * 0.03 + i) * 10; ctx.fillRect(x, y, 2, 2); }
+}
+
+// ---- plataformas ----
+function islVine(x, y, len, seed) {
+  ctx.strokeStyle = '#2e6a32'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.quadraticCurveTo(x + (hash(seed) - 0.5) * 14, y + len * 0.5, x + (hash(seed + 1) - 0.5) * 8, y + len); ctx.stroke();
+  ctx.fillStyle = '#4fae3b';
+  for (let k = 1; k <= 3; k++) { ctx.beginPath(); ctx.ellipse(x + (hash(seed + k) - 0.5) * 8, y + len * k / 3.4, 4, 2.4, 0.6 * (k % 2 ? 1 : -1), 0, 6.283); ctx.fill(); }
+}
+function islGrass(x, y, w, h) {
+  const g = ctx;
+  let sg = g.createLinearGradient(0, y, 0, y + h); sg.addColorStop(0, '#8a5a34'); sg.addColorStop(1, '#4b2e1b');
+  g.fillStyle = sg; g.fillRect(x, y + 4, w, h - 4);
+  g.fillStyle = 'rgba(0,0,0,0.18)'; for (let i = 6; i < w - 6; i += 13) g.fillRect(x + i + hash(x + i) * 4, y + 14 + hash(i) * (h - 18), 4, 3);
+  g.fillStyle = 'rgba(255,220,170,0.15)'; for (let i = 10; i < w - 6; i += 19) g.fillRect(x + i, y + 11 + hash(i + 3) * (h - 16), 3, 2);
+  sg = g.createLinearGradient(0, y - 3, 0, y + 14); sg.addColorStop(0, '#a6ee62'); sg.addColorStop(0.5, '#5fc245'); sg.addColorStop(1, '#2f8f38');
+  g.fillStyle = sg; g.beginPath(); g.moveTo(x - 4, y + 6); g.quadraticCurveTo(x - 5, y - 2, x + 4, y - 1); g.lineTo(x + w - 4, y - 1); g.quadraticCurveTo(x + w + 5, y - 2, x + w + 4, y + 6);
+  for (let i = w + 4; i >= -4; i -= 9) g.quadraticCurveTo(x + i - 2, y + 15 + hash(x + i) * 5, x + i - 9, y + 8 + hash(x + i + 2) * 3);
+  g.closePath(); g.fill();
+  g.fillStyle = 'rgba(210,255,150,0.75)'; g.fillRect(x + 2, y - 1, w - 4, 2);
+  for (let i = 3; i < w - 2; i += 5) {                          // tufos
+    const hh = 3 + hash(x * 0.37 + i) * 7;
+    g.fillStyle = i % 10 < 5 ? '#79d44a' : '#4fb53f';
+    g.beginPath(); g.moveTo(x + i - 2, y); g.lineTo(x + i, y - hh); g.lineTo(x + i + 2, y); g.fill();
+  }
+  const fl = ['#ff7eb0', '#ffe066', '#ffffff', '#b58bff'];     // flores
+  for (let i = 12; i < w - 8; i += 29 + Math.floor(hash(x + i) * 18)) { g.fillStyle = fl[Math.floor(hash(i + x) * 4)]; g.beginPath(); g.arc(x + i, y - 3, 2.4, 0, 6.283); g.fill(); g.fillStyle = '#2f8f38'; g.fillRect(x + i - 0.5, y - 2, 1, 3); }
+}
+function islRockBody(x, by, w, depth, main) {
+  const g = ctx;
+  const L = main ? [[0.02, 0], [0.04, 0.14], [0.1, 0.34], [0.2, 0.55], [0.32, 0.76], [0.42, 0.92], [0.5, 1]] : [[0.04, 0], [0.1, 0.36], [0.22, 0.66], [0.36, 0.9], [0.5, 1]];
+  const jit = (p, i) => [p[0] + (i && i < L.length - 1 ? (hash(x * 0.3 + i) - 0.5) * 0.03 : 0), p[1] + (i && i < L.length - 1 ? (hash(x * 0.3 + i + 7) - 0.5) * 0.05 : 0)];
+  const left = L.map(jit), right = L.map(jit).map(p => [1 - p[0], p[1]]).reverse();
+  const poly = [...left, ...right.slice(1)];
+  const path = () => { g.beginPath(); poly.forEach((p, i) => { const px = x + w * p[0], py = by + depth * p[1]; i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.closePath(); };
+  g.save(); path();
+  let rg = g.createLinearGradient(0, by, 0, by + depth); rg.addColorStop(0, '#a79b86'); rg.addColorStop(0.45, '#766b5a'); rg.addColorStop(1, '#3a3228');
+  g.fillStyle = rg; g.fill(); g.clip();
+  const lg = g.createLinearGradient(x, 0, x + w, 0); lg.addColorStop(0, 'rgba(255,245,220,0.22)'); lg.addColorStop(0.45, 'rgba(255,245,220,0)'); lg.addColorStop(1, 'rgba(0,0,20,0.28)');
+  g.fillStyle = lg; g.fillRect(x, by, w, depth);
+  g.strokeStyle = 'rgba(30,22,14,0.3)'; g.lineWidth = main ? 2 : 1.5;
+  const n = main ? 11 : 3;
+  for (let i = 1; i <= n; i++) { const yy = by + depth * i / (n + 1); g.beginPath(); g.moveTo(x, yy + hash(i + x) * 6); for (let k = 1; k <= 8; k++) g.lineTo(x + w * k / 8, yy + (hash(i * 9 + k + x) - 0.5) * 9); g.stroke(); }
+  g.strokeStyle = 'rgba(20,14,8,0.35)'; g.lineWidth = 1.5;
+  for (let i = 0; i < (main ? 9 : 3); i++) { const cx = x + w * (0.12 + hash(i + x * 0.2) * 0.76), cy = by + depth * (0.05 + hash(i + 40 + x) * 0.45); g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + (hash(i + 5) - 0.5) * 16, cy + 10 + hash(i + 6) * 14); g.lineTo(cx + (hash(i + 8) - 0.5) * 20, cy + 26 + hash(i + 9) * 16); g.stroke(); }
+  g.restore();
+  g.strokeStyle = 'rgba(30,22,14,0.65)'; g.lineWidth = 2.5; g.lineJoin = 'round'; path(); g.stroke();
+}
+function islMetalPlate(x, by, w, depth, f) {
+  const g = ctx, cx = x + w / 2;
+  const L = [[0.13, 0.06], [0.19, 0.28], [0.28, 0.52], [0.39, 0.74], [0.5, 0.86]];
+  const poly = [...L, ...L.slice(0, -1).reverse().map(p => [1 - p[0], p[1]])];
+  g.beginPath(); poly.forEach((p, i) => { const px = x + w * p[0], py = by + depth * p[1]; i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.closePath();
+  const mg = g.createLinearGradient(x, 0, x + w, 0); mg.addColorStop(0, '#6f7a86'); mg.addColorStop(0.35, '#c9d2d9'); mg.addColorStop(0.5, '#eef2f5'); mg.addColorStop(0.65, '#c9d2d9'); mg.addColorStop(1, '#6f7a86');
+  g.fillStyle = mg; g.fill(); g.lineJoin = 'round'; g.strokeStyle = '#2f3841'; g.lineWidth = 4; g.stroke(); g.strokeStyle = 'rgba(255,255,255,0.7)'; g.lineWidth = 1.5; g.stroke();
+  const glow = 0.55 + 0.35 * Math.sin(f * 0.05);
+  const groove = (gx, gy, gw, gh) => { g.fillStyle = '#26303a'; g.fillRect(gx, gy, gw, gh); g.fillStyle = 'rgba(110,240,255,' + glow.toFixed(2) + ')'; g.fillRect(gx + gw * 0.3, gy + 1, Math.max(1.5, gw * 0.4), gh - 2); };
+  const u = depth / 100;
+  groove(cx - 5, by + 12 * u, 10, 52 * u);                                  // canal central
+  groove(x + w * 0.27, by + 12 * u, w * 0.46, 8 * u);                         // barra superior (T)
+  groove(x + w * 0.27, by + 12 * u, 8, 22 * u); groove(x + w * 0.73 - 8, by + 12 * u, 8, 22 * u);
+  g.strokeStyle = '#26303a'; g.lineWidth = 7; g.beginPath(); g.arc(cx, by + 47 * u, 17 * u, 0, 6.283); g.stroke();
+  g.strokeStyle = 'rgba(110,240,255,' + glow.toFixed(2) + ')'; g.lineWidth = 2.5; g.beginPath(); g.arc(cx, by + 47 * u, 17 * u, 0, 6.283); g.stroke();
+  g.fillStyle = '#26303a'; g.beginPath(); g.moveTo(cx, by + 62 * u); g.lineTo(cx - 10, by + 74 * u); g.lineTo(cx, by + 83 * u); g.lineTo(cx + 10, by + 74 * u); g.closePath(); g.fill();
+  g.fillStyle = 'rgba(110,240,255,' + glow.toFixed(2) + ')'; g.beginPath(); g.moveTo(cx, by + 66 * u); g.lineTo(cx - 5, by + 74 * u); g.lineTo(cx, by + 79 * u); g.lineTo(cx + 5, by + 74 * u); g.closePath(); g.fill();
+  g.fillStyle = '#3f4953'; for (const p of [[0.2, 0.2], [0.8, 0.2], [0.29, 0.46], [0.71, 0.46]]) { g.beginPath(); g.arc(x + w * p[0], by + depth * p[1], 3.2, 0, 6.283); g.fill(); }   // rebites
+}
+function islColumn(x, y, h, broken) {
+  const g = ctx;
+  g.fillStyle = '#d8d2c0'; g.fillRect(x, y - h, 20, h); g.fillStyle = '#aea894'; g.fillRect(x + 13, y - h, 7, h);
+  g.fillStyle = '#c4bda8'; g.fillRect(x - 4, y - 8, 28, 8); g.fillRect(x - 3, y - h - (broken ? 0 : 7), 26, 7);
+  g.fillStyle = 'rgba(80,70,50,0.3)'; for (let k = 1; k < 4; k++) g.fillRect(x, y - h * k / 4, 20, 2);
+  if (broken) { g.fillStyle = '#d8d2c0'; g.beginPath(); g.moveTo(x, y - h); g.lineTo(x + 6, y - h - 9); g.lineTo(x + 12, y - h - 3); g.lineTo(x + 20, y - h - 11); g.lineTo(x + 20, y - h); g.fill(); }
+  g.fillStyle = '#4fae3b'; g.beginPath(); g.ellipse(x + 10, y - h - 2, 12, 4, 0, Math.PI, 0); g.fill();
+  islVine(x + 4, y - h + 4, h * 0.6, x); islVine(x + 17, y - h + 4, h * 0.4, x + 5);
+}
+function drawIslandPlatform(x, y, w, h, pl, f) {
+  const main = !!pl.main, by = y + h, depth = main ? Math.round(w * 0.44) : Math.round(Math.min(82, w * 0.5));
+  ctx.save();
+  // sombra suave no mar abaixo da ilha principal
+  if (main) { ctx.fillStyle = 'rgba(0,40,70,0.16)'; ctx.beginPath(); ctx.ellipse(x + w / 2, by + depth + 70, w * 0.38, 16, 0, 0, 6.283); ctx.fill(); }
+  islRockBody(x, by, w, depth, main);
+  if (main) {
+    islMetalPlate(x, by, w, depth, f);
+    for (let i = 0; i < 9; i++) islVine(x + w * (0.06 + i * 0.11) + hash(i) * 10, by + 2, 16 + hash(i + 4) * 46, i + 20);
+    const gl = ctx.createRadialGradient(x + w / 2, by + depth, 4, x + w / 2, by + depth, 60); gl.addColorStop(0, 'rgba(110,240,255,0.35)'); gl.addColorStop(1, 'rgba(110,240,255,0)');
+    ctx.fillStyle = gl; ctx.fillRect(x + w / 2 - 60, by + depth - 60, 120, 120);
+  } else {
+    for (let i = 0; i < 3; i++) islVine(x + w * (0.22 + i * 0.28), by + 4, 12 + hash(x + i) * 26, Math.floor(x) + i);
+  }
+  islGrass(x, y, w, h);
+  if (main) {
+    islColumn(x + w * 0.05, y + 2, 96, false); islColumn(x + w * 0.9, y + 2, 58, true);
+    ctx.fillStyle = '#8f8a78'; for (const [px, s] of [[0.2, 7], [0.33, 5], [0.71, 6], [0.8, 8]]) { ctx.beginPath(); ctx.ellipse(x + w * px, y, s * 1.5, s, 0, Math.PI, 0); ctx.fill(); }
+    ctx.fillStyle = '#3f9d3a'; for (const px of [0.16, 0.27, 0.76, 0.85]) { ctx.beginPath(); ctx.arc(x + w * px, y - 2, 9, Math.PI, 0); ctx.arc(x + w * px + 10, y - 2, 6, Math.PI, 0); ctx.fill(); }
+  }
+  ctx.restore();
+}
+
 function drawPlatforms(m, f) {
   for (const pl of m.platforms) {
     const on = !pl.phasing || (f + (pl.offset || 0)) % (pl.onTime + pl.offTime) < pl.onTime;
     const x = pl.moving ? pl.x + Math.sin(f * pl.speed) * pl.range * 0.5 : pl.x, y = pl.y, w = pl.w, h = pl.h;
     ctx.save(); if (!on) ctx.globalAlpha = 0.22;
     if (m.id === 'planicie') {
-      drawPixelPlatform(x, y, w, h, pl.bridge);
-      if (pl.tree) drawTree(x + w * 0.5, y);
-      if (pl.main) for (let i = 0; i < 30; i++) { ctx.fillStyle = ['#ff6b9d', '#ffe066', '#ffffff'][i % 3]; ctx.fillRect(40 + i * 47 + hash(i) * 20, y - 6, 4, 4); }
+      drawIslandPlatform(x, y, w, h, pl, f);
     } else if (m.id === 'forja') {
       ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(x + 4, y + 6, w, h);
       ctx.fillStyle = '#2b1710'; ctx.fillRect(x, y, w, h);
@@ -1880,7 +2471,7 @@ function drawMenuIconBtn(x, y, w, h, kind, green, hv) {
   ctx.restore();
 }
 const MENU_ICONS = [
-  { k: 'cube' }, { k: 'bag', green: true, msg: 'Loja em breve!' }, { k: 'alert' }, { k: 'people' }, { k: 'chat' }, { k: 'ring' }, { k: 'wrench' }
+  { k: 'cube' }, { k: 'bag', green: true, msg: 'Loja em breve!' }, { k: 'alert' }, { k: 'people' }, { k: 'chat' }, { k: 'ring' }, { k: 'wrench', tip: 'Definições', run: () => openSettings() }
 ];
 
 function drawMenuPanel() {
@@ -1919,11 +2510,20 @@ function drawMenuPanel() {
 
   // 7 ícones
   const iY = 78, iH = 38, iW = 48, iG = (IW - 7 * iW) / 6;
+  let tipX = null; const tipLabel = 'Definições';
   MENU_ICONS.forEach((ic, i) => {
     const x = IX + i * (iW + iG), hv = inside(x, iY, iW, iH); if (hv) uiHover = true;
     drawMenuIconBtn(x, iY, iW, iH, ic.k, !!ic.green, hv);
-    if (hv && mouse.click) alert(ic.msg || 'Em breve!');
+    if (hv && ic.tip) tipX = x + iW / 2;
+    if (hv && mouse.click) { if (ic.run) ic.run(); else alert(ic.msg || 'Em breve!'); }
   });
+  if (tipX !== null) {                                   // legenda por baixo do ícone
+    ctx.save(); ctx.font = 'bold 14px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(tipLabel).width + 18, tx = Math.min(W - 8 - tw / 2, tipX);
+    ctx.fillStyle = 'rgba(8,20,60,0.92)'; roundRect(tx - tw / 2, iY + iH + 6, tw, 24, 12); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.fillText(tipLabel, tx, iY + iH + 19); ctx.restore();
+  }
   // cartões (grelha como no Brawlhalla): as lendas, Volt, jogar online, ranked
   const cx0 = 420, cw1 = 500, cw2 = 314, gap = 16, ty = 160, th = 290, by2 = ty + th + gap, bh2 = 160;
   menuCard(cx0, ty, cw1, th, '#16224f', '#5b2a86', (x, y, w, h) => {
@@ -2292,7 +2892,7 @@ function drawMapVote() {
 
     ctx.save(); ctx.translate(x, y); ctx.fillStyle = voted ? 'rgba(255,255,255,0.9)' : (hover ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.5)'); ctx.strokeStyle = voted ? '#00ff00' : (hover ? m.accentColor : '#333'); ctx.lineWidth = voted ? 6 : 2; roundRect(0, 0, cardW, cardH, 12); ctx.fill(); ctx.stroke();
 
-    ctx.save(); ctx.translate(10, 10); ctx.scale(0.236, 0.236); ctx.beginPath(); ctx.rect(0, 0, WW, WH); ctx.clip(); drawBackground(m, 30); drawPlatforms(m, 30); ctx.restore();
+    ctx.save(); ctx.translate(10, 10); ctx.scale(339.84 / WW, 339.84 / WW); ctx.beginPath(); ctx.rect(0, 0, WW, WH); ctx.clip(); drawBackground(m, 30); drawPlatforms(m, 30); ctx.restore();
 
     ctx.fillStyle = voted ? '#000' : m.accentColor; ctx.font = 'bold 24px system-ui'; ctx.fillText(m.name, cardW/2, 300); ctx.fillStyle = '#333'; ctx.font = '16px system-ui'; ctx.fillText(m.desc, cardW/2, 330);
 
@@ -2346,7 +2946,9 @@ function frame(now) {
       update(dt); S.frame += dt;
     }
   }
-  render(); drawNetOverlay(); canvas.style.cursor = uiHover ? 'pointer' : 'default'; uiHover = false; mouse.click = false;
+  audioObserve();
+  render(); drawNetOverlay(); if (mouse.click && uiHover) sfx('click');
+  canvas.style.cursor = uiHover ? 'pointer' : 'default'; uiHover = false; mouse.click = false;
 }
 function loop(now) {
   try { frame(now); }
@@ -2380,10 +2982,9 @@ function update(dt) {
 }
 
 function readInput(idx) {
-  const isP1 = idx === 0;
-  const jumpKey = isP1 ? keys['w'] : keys['arrowup'];
-  if (isP1) return { left: keys['a'], right: keys['d'], jump: jumpKey, down: keys['s'], light: keys['j'], heavy: keys['k'], special: keys['l'], dodge: keys['shift'] };
-  return { left: keys['arrowleft'], right: keys['arrowright'], jump: jumpKey, down: keys['arrowdown'], light: keys['1'], heavy: keys['2'], special: keys['3'], dodge: keys['0'] };
+  const b = SETTINGS.binds[idx === 0 ? 0 : 1], r = {};
+  for (const [a] of ACTIONS) r[a] = !!keys[b[a]];
+  return r;
 }
 
 function startGame(mapId, fromNetwork = false) {
